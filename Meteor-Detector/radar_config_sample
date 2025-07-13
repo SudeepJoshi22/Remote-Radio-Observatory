@@ -1,0 +1,10 @@
+stationID: Sirsi 		; Geographical location of the receiver
+longitude: 74.83055556      	; Geographical longitude of the receiver
+latitude:  14.64111111      	; Geographical latitude of the receiver
+elevation: 588         ; Altitude above sea level of the receiver in metres
+ID_NUM: XX            ; ID number used for Radio Meteor Detection Collaboration Project
+foff: -60             ; Measured frequency offset of the receiver in Hz
+TxSource: FM      ; Name of the tranmitter
+TimeSync: NTP         ; Time synchronisation method
+country: India           ; Country
+region: Sirsi, Karnataka      ; Region within country
