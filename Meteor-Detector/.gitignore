@@ -2,3 +2,4 @@
 *.iq
 *.wav
 /venv
+/recordings
