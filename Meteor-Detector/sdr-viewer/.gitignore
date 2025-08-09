@@ -1,0 +1,5 @@
+*.swp
+*.iq
+*.wav
+/venv
+/recordings

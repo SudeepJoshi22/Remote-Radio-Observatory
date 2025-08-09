@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDR Signal Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #111827; }
+        .loader { border-top-color: #3498db; -webkit-animation: spin 1s linear infinite; animation: spin 1s linear infinite; }
+        @-webkit-keyframes spin { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="text-gray-200">
+
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-white">SDR Signal Viewer</h1>
+            <p class="text-gray-400 mt-2">Analyze SigMF recordings from your Rocky Linux Server.</p>
+        </header>
+
+        <div class="bg-gray-800 rounded-lg shadow-lg p-6 mb-8 max-w-2xl mx-auto">
+            <label for="file-selector" class="block mb-2 text-sm font-medium text-gray-300">Select a Recording:</label>
+            <div class="flex items-center space-x-4">
+                <select id="file-selector" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                    <option selected disabled>Loading recordings...</option>
+                </select>
+                <button id="refresh-button" class="p-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg" title="Refresh File List">
+                    <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h5M20 20v-5h-5M4 4l1.5 1.5A9 9 0 0121.5 12M20 20l-1.5-1.5A9 9 0 002.5 12"></path></svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="plot-container" class="bg-gray-800 rounded-lg shadow-lg p-4 min-h-[500px] flex items-center justify-center">
+            <div id="plot-message" class="text-center">
+                <div id="loader" class="loader ease-linear rounded-full border-4 border-t-4 border-gray-500 h-12 w-12 mx-auto mb-4" style="display: none;"></div>
+                <p id="status-text" class="text-gray-400">Please select a recording to view the plot.</p>
+            </div>
+            <div id="chart" class="w-full h-full" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        const fileSelector = document.getElementById('file-selector');
+        const refreshButton = document.getElementById('refresh-button');
+        const chartDiv = document.getElementById('chart');
+        const plotMessageDiv = document.getElementById('plot-message');
+        const loader = document.getElementById('loader');
+        const statusText = document.getElementById('status-text');
+
+        // Fetches the list of available recordings
+        async function fetchRecordingList() {
+            setStatus('Loading recording list...', true);
+            fileSelector.innerHTML = '<option selected disabled>Loading...</option>';
+            try {
+                const response = await fetch('/api/recordings');
+                if (!response.ok) throw new Error(`Server error: ${response.status}`);
+                const recordings = await response.json();
+                updateFileSelector(recordings);
+                setStatus('Please select a recording to view the plot.');
+            } catch (error) {
+                console.error("Error fetching recording list:", error);
+                setStatus(`Could not load recordings. ${error.message}`);
+                fileSelector.innerHTML = '<option selected disabled>Error loading recordings</option>';
+            }
+        }
+        
+        // Populates the dropdown menu
+        function updateFileSelector(recordings) {
+            fileSelector.innerHTML = '';
+            if (recordings.length === 0) {
+                fileSelector.innerHTML = '<option selected disabled>No recordings found</option>';
+                return;
+            }
+            const defaultOption = document.createElement('option');
+            defaultOption.textContent = 'Select a recording...';
+            defaultOption.selected = true;
+            defaultOption.disabled = true;
+            fileSelector.appendChild(defaultOption);
+            recordings.forEach(rec => {
+                const option = document.createElement('option');
+                option.value = rec.prefix;
+                // --- FIX 1: Corrected Date Parsing ---
+                // The server sends a full ISO string. We no longer need to add 'Z'.
+                const dateObj = new Date(rec.start_time);
+                option.textContent = !isNaN(dateObj) ? dateObj.toLocaleString() : "Invalid Date in Metadata";
+                fileSelector.appendChild(option);
+            });
+        }
+
+        // Fetches and plots the processed data
+        async function loadAndPlotData(prefix) {
+            if (!prefix) return;
+            setStatus(`Processing data for ${prefix}...`, true);
+            Plotly.purge(chartDiv);
+            try {
+                const response = await fetch(`/api/plot_data/${prefix}`);
+                const plotData = await response.json();
+
+                if (!response.ok || plotData.error) {
+                    throw new Error(plotData.error || `Server returned status ${response.status}`);
+                }
+                
+                plot(plotData.timestamps, plotData.values, plotData.metadata);
+                plotMessageDiv.style.display = 'none';
+                chartDiv.style.display = 'block';
+            } catch (error)
+                {
+                console.error("Error loading or plotting data:", error);
+                setStatus(`Error: ${error.message}`);
+            }
+        }
+
+        // Renders the plot using Plotly
+        function plot(timestamps, values, metadata) {
+            const trace = {
+                x: timestamps, y: values, mode: 'lines', type: 'scattergl',
+                line: { color: '#3b82f6', width: 1 }
+            };
+            const layout = {
+                title: `Signal vs. Time (UTC)<br><span style="font-size: 0.8em; color: #9ca3af;">Center Freq: ${metadata['core:freq_center']/1e6} MHz</span>`,
+                // --- FIX 2: Corrected Plot Layout ---
+                // Using automargin forces the plot to fit the container correctly.
+                xaxis: { title: 'Time (UTC)', type: 'date', gridcolor: '#374151', linecolor: '#4b5563', automargin: true },
+                yaxis: { title: 'Magnitude (dB)', gridcolor: '#374151', linecolor: '#4b5563', automargin: true },
+                paper_bgcolor: '#1f2937', plot_bgcolor: '#1f2937',
+                font: { color: '#d1d5db' },
+                margin: { l: 60, r: 30, b: 50, t: 80, pad: 4 }, // Adjusted bottom margin for title
+                autosize: true
+            };
+            Plotly.newPlot(chartDiv, [trace], layout, { responsive: true, scrollZoom: true, displaylogo: false });
+        }
+        
+        // Updates the status message and loader
+        function setStatus(text, showLoader = false) {
+            plotMessageDiv.style.display = 'block';
+            chartDiv.style.display = 'none';
+            statusText.textContent = text;
+            loader.style.display = showLoader ? 'block' : 'none';
+        }
+
+        // --- Event Listeners ---
+        fileSelector.addEventListener('change', (event) => loadAndPlotData(event.target.value));
+        refreshButton.addEventListener('click', fetchRecordingList);
+        document.addEventListener('DOMContentLoaded', fetchRecordingList);
+    </script>
+</body>
+</html>
+
