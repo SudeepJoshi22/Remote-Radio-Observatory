@@ -20,18 +20,27 @@ stop_event = threading.Event()
 plot_buffer_lock = threading.Lock()
 
 # --- FFT Power Processing Function ---
-def process_fft_power(samples, fft_size, integration_bins):
-    """Calculates a single integrated power value from a chunk of IQ samples."""
-    # This function is designed to be called when processing_method is 'fft_power'
-    # It processes a chunk of samples equal to fft_size.
+def process_fft_power(samples, fft_size, integration_bins, sample_rate):
+    """Calculates a single integrated power spectral density value from a chunk of IQ samples."""
+    # 1. Calculate FFT
     fft_result = np.fft.fft(samples, n=fft_size)
     fft_shifted = np.fft.fftshift(fft_result)
+    
+    # 2. Isolate the bins of interest
     center_bin = fft_size // 2
     start_bin = center_bin - integration_bins // 2
     end_bin = center_bin + integration_bins // 2
     signal_bins = fft_shifted[start_bin:end_bin]
+    
+    # 3. Calculate power
     power = np.sum(np.abs(signal_bins)**2)
-    power_db = 10 * np.log10(power + 1e-12)
+    
+    # 4. Normalize by FFT bin width to get Power Spectral Density (PSD)
+    # This makes the measurement independent of sample rate and FFT size.
+    psd = power / (sample_rate / fft_size)
+    
+    # 5. Convert to dB
+    power_db = 10 * np.log10(psd + 1e-12)
     return power_db
 
 # --- SDR Recording and Processing Thread ---
@@ -53,14 +62,12 @@ def sdr_record_and_process_thread(
     # --- Determine mode-specific parameters ---
     raw_chunk_size = 65536 # Use a consistent raw chunk size for reading
     if processing_method == 'fft_power':
-        # For fft_power, the effective sample rate is the rate of the *output* stepped signal.
-        # It depends on how many steps we get from a raw chunk.
         num_segments = raw_chunk_size // fft_size
         num_output_samples_per_segment = fft_size // downsample_factor
         num_total_output_samples = num_segments * num_output_samples_per_segment
         effective_sample_rate = (sample_rate / raw_chunk_size) * num_total_output_samples
-        description = f"SDR FFT power (dB) recording at {frequency/1e6:.3f} MHz"
-        print(f"  [Recorder] FFT power (dB) data will be saved to: {data_filename}")
+        description = f"SDR FFT Power Spectral Density (dB/Hz) recording at {frequency/1e6:.3f} MHz"
+        print(f"  [Recorder] FFT Power Spectral Density (dB/Hz) data will be saved to: {data_filename}")
     else: # amplitude mode
         effective_sample_rate = sample_rate / downsample_factor
         description = f"SDR magnitude (dB) recording at {frequency/1e6:.3f} MHz"
@@ -103,12 +110,13 @@ def sdr_record_and_process_thread(
                 processed_values = []
                 for i in range(num_segments):
                     segment = samples[i*fft_size : (i+1)*fft_size]
-                    power_db = process_fft_power(segment, fft_size, integration_bins)
+                    # Pass sample_rate to the processing function for normalization
+                    power_db = process_fft_power(segment, fft_size, integration_bins, sample_rate)
                     processed_values.append(power_db)
                 
                 num_output_samples_per_segment = fft_size // downsample_factor
                 final_chunk = np.repeat(processed_values, num_output_samples_per_segment).astype(np.float32)
-                print(f"\r  [Recorder] Time: {timestamp.strftime('%H:%M:%S')}, Power: {np.mean(processed_values):.2f} dB", end="", flush=True)
+                print(f"\r  [Recorder] Time: {timestamp.strftime('%H:%M:%S')}, Power: {np.mean(processed_values):.2f} dB/Hz", end="", flush=True)
 
             else: # amplitude mode
                 power_db_chunk = 20 * np.log10(np.abs(samples) + 1e-12)
@@ -129,6 +137,7 @@ def sdr_record_and_process_thread(
                 with plot_buffer_lock:
                     plot_data_buffer.extend(final_chunk)
                     plot_time_buffer.extend(new_timestamps)
+
     finally:
         metadata["captures"][0]["core:sample_count"] = recorded_samples_count
         with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
