@@ -1,10 +1,12 @@
 import argparse
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.dates as mdates
 from rtlsdr import RtlSdr
-from datetime import datetime, timezone
+from scipy.signal import firwin, lfilter
+from datetime import datetime, timezone, timedelta
 import sys
 import collections
 import threading
@@ -12,190 +14,223 @@ import time
 import os
 
 # --- Shared Buffers for Threading ---
-plot_power_buffer = collections.deque()
+plot_data_buffer = collections.deque()
 plot_time_buffer = collections.deque()
 stop_event = threading.Event()
 plot_buffer_lock = threading.Lock()
 
-# --- New FFT Processing Function ---
-def process_power_spectrum(samples, fft_size, integration_bins):
-    """
-    Performs FFT and calculates integrated power in a specific band.
-    """
-    # 1. Perform FFT
+# --- FFT Power Processing Function ---
+def process_fft_power(samples, fft_size, integration_bins):
+    """Calculates a single integrated power value from a chunk of IQ samples."""
+    # This function is designed to be called when processing_method is 'fft_power'
+    # It processes a chunk of samples equal to fft_size.
     fft_result = np.fft.fft(samples, n=fft_size)
     fft_shifted = np.fft.fftshift(fft_result)
-    
-    # 2. Isolate the signal bins around the center frequency
     center_bin = fft_size // 2
     start_bin = center_bin - integration_bins // 2
     end_bin = center_bin + integration_bins // 2
     signal_bins = fft_shifted[start_bin:end_bin]
-
-    # 3. Calculate total power in the selected bins
     power = np.sum(np.abs(signal_bins)**2)
-    
-    return power
+    power_db = 10 * np.log10(power + 1e-12)
+    return power_db
 
 # --- SDR Recording and Processing Thread ---
-def sdr_power_thread(
-    sdr_instance: RtlSdr,
-    fft_size: int,
-    integration_bins: int,
-    output_file_handle,
-    is_plotting_enabled: bool
+def sdr_record_and_process_thread(
+    sdr_instance: RtlSdr, frequency: float, sample_rate: float, gain: float,
+    duration_s: float, output_prefix: str, continuous: bool,
+    processing_method: str, downsample_factor: int, downsample_method: str,
+    fft_size: int, integration_bins: int, is_plotting_enabled: bool
 ):
-    """
-    Continuously reads SDR data, processes it for power, writes to file,
-    and adds to plot buffers.
-    """
+    output_file = None
+    recordings_dir = "recordings"
+    os.makedirs(recordings_dir, exist_ok=True)
+
+    # --- Setup based on Processing Method ---
+    data_filename = os.path.join(recordings_dir, f"{output_prefix}.sigmf-data")
+    meta_filename = os.path.join(recordings_dir, f"{output_prefix}.sigmf-meta")
+    output_file = open(data_filename, 'wb')
+    
+    # The effective sample rate is the rate of the data being written to the file.
+    if processing_method == 'fft_power':
+        # For fft_power, we get one data point per raw chunk.
+        # The chunk size is determined by the larger of fft_size or a default for efficiency.
+        raw_chunk_size = 65536 
+        effective_sample_rate = sample_rate / raw_chunk_size
+        description = f"SDR FFT power (dB) recording at {frequency/1e6:.3f} MHz"
+        print(f"  [Recorder] FFT power (dB) data will be saved to: {data_filename}")
+    else: # amplitude mode
+        raw_chunk_size = 65536
+        effective_sample_rate = sample_rate / downsample_factor
+        description = f"SDR magnitude (dB) recording at {frequency/1e6:.3f} MHz"
+        print(f"  [Recorder] Amplitude (dB) data will be saved to: {data_filename}")
+
+    # --- SigMF Metadata Initialization (Common for both modes) ---
+    metadata = {
+        "global": {
+            "datatype": "f32_le", "sample_rate": effective_sample_rate,
+            "start_time": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + 'Z',
+            "core:hw": "RTL-SDR", "core:freq_center": frequency, "core:gain": sdr_instance.gain,
+            "core:description": description
+        },
+        "captures": [{"core:sample_start": 0, "core:tuner_freq": frequency, "core:gain": sdr_instance.gain, "core:sample_count": 0}],
+        "annotations": []
+    }
+    with open(meta_filename, 'w') as f:
+        json.dump(metadata, f, indent=4)
+
+    recorded_samples_count = 0
+    start_time_recording = time.monotonic()
+
     try:
         while not stop_event.is_set():
+            if not continuous and (time.monotonic() - start_time_recording) >= duration_s:
+                break
+
             try:
-                samples = sdr_instance.read_samples(fft_size)
+                samples = sdr_instance.read_samples(raw_chunk_size)
             except Exception as e:
                 print(f"\n[Recorder] Error reading samples: {e}. Stopping.")
                 stop_event.set()
                 break
 
-            # Process the chunk of samples
-            power = process_power_spectrum(samples, fft_size, integration_bins)
             timestamp = datetime.now(timezone.utc)
 
-            # Save data to CSV file
-            output_file_handle.write(f"{timestamp.isoformat()},{power}\n")
+            if processing_method == 'fft_power':
+                # Process in smaller segments of fft_size
+                num_segments = len(samples) // fft_size
+                processed_values = []
+                for i in range(num_segments):
+                    segment = samples[i*fft_size : (i+1)*fft_size]
+                    power_db = process_fft_power(segment, fft_size, integration_bins)
+                    processed_values.append(power_db)
+                
+                # To maintain compatibility, we create a stepped signal.
+                # Each calculated power value is repeated to match an equivalent downsample factor.
+                num_output_samples_per_segment = fft_size // downsample_factor
+                final_chunk = np.repeat(processed_values, num_output_samples_per_segment).astype(np.float32)
+                
+                print(f"\r  [Recorder] Time: {timestamp.strftime('%H:%M:%S')}, Power: {np.mean(processed_values):.2f} dB", end="", flush=True)
 
-            # Add to plot buffers if plotting is enabled
+            else: # amplitude mode
+                power_db_chunk = 20 * np.log10(np.abs(samples) + 1e-12)
+                trim_len = len(power_db_chunk) // downsample_factor * downsample_factor
+                reshaped = power_db_chunk[:trim_len].reshape(-1, downsample_factor)
+                if downsample_method == 'avg':
+                    final_chunk = reshaped.mean(axis=1).astype(np.float32)
+                elif downsample_method == 'max':
+                    final_chunk = reshaped.max(axis=1).astype(np.float32)
+                print(f"\r  [Recorder] Samples written: {recorded_samples_count + len(final_chunk):,}", end="", flush=True)
+
+            # --- Write data and update plot (Common for both modes) ---
+            output_file.write(final_chunk.tobytes())
+            recorded_samples_count += len(final_chunk)
+
             if is_plotting_enabled:
+                current_chunk_time_start = timestamp - timedelta(seconds=len(samples) / sample_rate)
+                new_timestamps = [current_chunk_time_start + timedelta(seconds=i / effective_sample_rate) for i in range(len(final_chunk))]
                 with plot_buffer_lock:
-                    plot_power_buffer.append(power)
-                    plot_time_buffer.append(timestamp)
-            
-            print(f"\r  [Recorder] Time: {timestamp.strftime('%H:%M:%S')}, Relative Power: {power:.2f}", end="", flush=True)
-            
-            # A small sleep can be added here if the loop runs too fast,
-            # but it's often better to let read_samples block.
-            # time.sleep(0.01)
+                    plot_data_buffer.extend(final_chunk)
+                    plot_time_buffer.extend(new_timestamps)
 
-    except Exception as e:
-        print(f"\n[Recorder] Critical error in recording thread: {e}")
-        stop_event.set()
-    finally:
-        print("\n[Recorder] Recording thread finished.")
+finally:
+    if 'meta_filename' in locals():
+        metadata["captures"][0]["core:sample_count"] = recorded_samples_count
+        with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
+    if output_file: output_file.close()
+    print("\n[Recorder] Recording thread finished.")
 
 # --- Matplotlib Plotting Update Function ---
 def live_plot_update(frame, line, ax_time):
-    """
-    Update function for Matplotlib's FuncAnimation.
-    """
     with plot_buffer_lock:
-        if not plot_power_buffer:
+        if not plot_data_buffer:
             return line,
-
-        plot_data = np.array(list(plot_power_buffer))
+        # Limit buffer size to avoid excessive memory usage on long runs
+        max_len = 20000 # Display last ~20000 points
+        if len(plot_data_buffer) > max_len:
+            for _ in range(len(plot_data_buffer) - max_len):
+                plot_data_buffer.popleft()
+                plot_time_buffer.popleft()
+        
+        plot_data = np.array(list(plot_data_buffer))
         plot_times = mdates.date2num(list(plot_time_buffer))
 
     line.set_ydata(plot_data)
     line.set_xdata(plot_times)
-
     ax_time.relim()
     ax_time.autoscale_view()
-    
     fig = ax_time.get_figure()
     fig.autofmt_xdate()
-
     return line,
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Record and plot integrated power from an RTL-SDR for meteor detection."
-    )
-    parser.add_argument('-f', '--freq', type=float, required=True, help="Center frequency in Hz (e.g., 88.5e6)")
-    parser.add_argument('-s', '--sample-rate', type=float, required=True, help="Sample rate in Hz (e.g., 240e3)")
+    parser = argparse.ArgumentParser(description="Record and process data from an RTL-SDR.")
+    # General arguments
+    parser.add_argument('-f', '--freq', type=float, required=True, help="Center frequency in Hz")
+    parser.add_argument('-s', '--sample-rate', type=float, required=True, help="Sample rate in Hz")
     parser.add_argument('-g', '--gain', type=str, default='auto', help="Gain in dB (e.g., '30' or 'auto')")
-    parser.add_argument('--fft-size', type=int, default=1024, help="FFT size (number of points). Default: 1024.")
-    parser.add_argument('--integration-bins', type=int, default=5, help="Number of FFT bins to integrate for power. Default: 5.")
-    parser.add_argument('-o', '--output', type=str, help="Output CSV filename (default: meteor_power_YYYYMMDDTHHMMSSZ.csv)")
-    parser.add_argument('--plot', action='store_true', help="Enable real-time plotting of power data.")
+    parser.add_argument('-o', '--output', type=str, help="Output filename prefix")
+    parser.add_argument('--plot', action='store_true', help="Enable real-time plotting")
+    # Duration arguments
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('-d', '--duration', type=float, help="Recording duration in seconds")
+    group.add_argument('-c', '--continuous', action='store_true', help="Record continuously")
+    # Processing arguments
+    parser.add_argument('--processing-method', type=str, choices=['amplitude', 'fft_power'], default='amplitude', help="Processing method. Default: amplitude")
+    # Amplitude-specific arguments
+    parser.add_argument('--downsample-method', type=str, choices=['avg', 'max'], default='avg', help="Downsampling method for amplitude processing. Default: avg")
+    parser.add_argument('--downsample', type=int, default=1000, help="Downsample factor for both processing methods. Default: 1000")
+    # FFT-specific arguments
+    parser.add_argument('--fft-size', type=int, default=1024, help="FFT size for fft_power processing. Default: 1024")
+    parser.add_argument('--integration-bins', type=int, default=5, help="Number of FFT bins to integrate for fft_power. Default: 5")
 
     args = parser.parse_args()
 
     try:
         gain_val = float(args.gain)
     except ValueError:
-        if args.gain.lower() == 'auto':
-            gain_val = 'auto'
-        else:
-            parser.error(f"Invalid gain value '{args.gain}'. Must be a number or 'auto'.")
+        gain_val = 'auto' if args.gain.lower() == 'auto' else parser.error("Invalid gain")
 
-    output_filename = args.output
-    if output_filename is None:
-        output_filename = f"meteor_power_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.csv"
-
-    recordings_dir = "recordings"
-    os.makedirs(recordings_dir, exist_ok=True)
-    full_output_path = os.path.join(recordings_dir, output_filename)
+    output_prefix_val = args.output or f"sdr_capture_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
     sdr_instance = None
-    recording_thread = None
-    output_file = None
-
     try:
         sdr_instance = RtlSdr()
         sdr_instance.sample_rate = args.sample_rate
         sdr_instance.center_freq = args.freq
         sdr_instance.gain = gain_val
+        print(f"SDR initialized: Sample Rate={sdr_instance.sample_rate/1e6:.3f} MS/s, Freq={sdr_instance.center_freq/1e6:.2f} MHz, Gain={sdr_instance.gain}")
 
-        print(f"SDR initialized: Sample Rate={sdr_instance.sample_rate/1e6:.3f} MS/s, "
-              f"Center Freq={sdr_instance.center_freq/1e6:.2f} MHz, Gain={sdr_instance.gain}")
-        print(f"FFT Size: {args.fft_size}, Integration Bins: {args.integration_bins}")
-
-        output_file = open(full_output_path, 'w')
-        output_file.write("timestamp,power\n") # Write CSV header
-        print(f"Saving data to: {full_output_path}")
-
-        recording_thread = threading.Thread(
-            target=sdr_power_thread,
-            args=(sdr_instance, args.fft_size, args.integration_bins, output_file, args.plot)
-        )
+        thread_args = (sdr_instance, args.freq, args.sample_rate, gain_val, args.duration, output_prefix_val, args.continuous, 
+                       args.processing_method, args.downsample, args.downsample_method, args.fft_size, args.integration_bins, args.plot)
+        recording_thread = threading.Thread(target=sdr_record_and_process_thread, args=thread_args)
         recording_thread.daemon = True
         recording_thread.start()
 
         if args.plot:
             fig, ax_time = plt.subplots(1, 1, figsize=(12, 6))
-            line, = ax_time.plot([], [], lw=1, color='blue')
-            ax_time.set_title("Real-time Meteor Scatter Power (UTC)")
+            line, = ax_time.plot([], [], lw=1)
+            ax_time.set_title(f"Real-time {args.processing_method.replace('_', ' ').title()} (UTC)")
             ax_time.set_xlabel("Time (UTC)")
-            ax_time.set_ylabel("Relative Power")
-            ax_time.grid(True, linestyle=':', alpha=0.7)
+            ax_time.set_ylabel("Power (dB)" if args.processing_method == 'fft_power' else "Magnitude (dB)")
+            ax_time.grid(True, linestyle=':')
             ax_time.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            fig.autofmt_xdate()
-
-            ani = animation.FuncAnimation(
-                fig, live_plot_update, fargs=(line, ax_time),
-                interval=500, blit=True, cache_frame_data=False
-            )
+            ani = animation.FuncAnimation(fig, live_plot_update, fargs=(line, ax_time), interval=200, blit=True, cache_frame_data=False)
             plt.show()
             stop_event.set()
         else:
-            print("Recording in background. Press Ctrl+C to stop.")
-            while not stop_event.is_set():
-                time.sleep(1)
+            # In non-plot mode, we need a way to gracefully stop
+            while recording_thread.is_alive():
+                time.sleep(0.5)
 
     except KeyboardInterrupt:
-        print("\n[Main] Application interrupted by user (Ctrl+C).")
+        print("\n[Main] Interrupted by user.")
     except Exception as e:
-        print(f"\n[Main] Failed to initialize SDR or run application: {e}")
+        print(f"\n[Main] Error: {e}")
     finally:
         stop_event.set()
-        if recording_thread and recording_thread.is_alive():
-            recording_thread.join(timeout=2)
-        if sdr_instance:
-            sdr_instance.close()
-            print("SDR device closed.")
-        if output_file:
-            output_file.close()
-            print("Data file closed.")
+        if 'recording_thread' in locals() and recording_thread.is_alive(): recording_thread.join(2)
+        if sdr_instance: sdr_instance.close()
+        print("SDR closed. Exiting.")
         sys.exit(0)
 
