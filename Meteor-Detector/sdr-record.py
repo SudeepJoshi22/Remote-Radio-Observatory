@@ -131,13 +131,12 @@ def sdr_record_and_process_thread(
                 with plot_buffer_lock:
                     plot_data_buffer.extend(final_chunk)
                     plot_time_buffer.extend(new_timestamps)
-
-finally:
-    if 'meta_filename' in locals():
-        metadata["captures"][0]["core:sample_count"] = recorded_samples_count
-        with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
-    if output_file: output_file.close()
-    print("\n[Recorder] Recording thread finished.")
+    finally:
+        if 'meta_filename' in locals():
+            metadata["captures"][0]["core:sample_count"] = recorded_samples_count
+            with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
+        if output_file: output_file.close()
+        print("\n[Recorder] Recording thread finished.")
 
 # --- Matplotlib Plotting Update Function ---
 def live_plot_update(frame, line, ax_time):
