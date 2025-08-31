@@ -45,21 +45,23 @@ def sdr_record_and_process_thread(
     recordings_dir = "recordings"
     os.makedirs(recordings_dir, exist_ok=True)
 
-    # --- Setup based on Processing Method ---
+    # --- Setup filenames and open data file ---
     data_filename = os.path.join(recordings_dir, f"{output_prefix}.sigmf-data")
     meta_filename = os.path.join(recordings_dir, f"{output_prefix}.sigmf-meta")
     output_file = open(data_filename, 'wb')
     
-    # The effective sample rate is the rate of the data being written to the file.
+    # --- Determine mode-specific parameters ---
+    raw_chunk_size = 65536 # Use a consistent raw chunk size for reading
     if processing_method == 'fft_power':
-        # For fft_power, we get one data point per raw chunk.
-        # The chunk size is determined by the larger of fft_size or a default for efficiency.
-        raw_chunk_size = 65536 
-        effective_sample_rate = sample_rate / raw_chunk_size
+        # For fft_power, the effective sample rate is the rate of the *output* stepped signal.
+        # It depends on how many steps we get from a raw chunk.
+        num_segments = raw_chunk_size // fft_size
+        num_output_samples_per_segment = fft_size // downsample_factor
+        num_total_output_samples = num_segments * num_output_samples_per_segment
+        effective_sample_rate = (sample_rate / raw_chunk_size) * num_total_output_samples
         description = f"SDR FFT power (dB) recording at {frequency/1e6:.3f} MHz"
         print(f"  [Recorder] FFT power (dB) data will be saved to: {data_filename}")
     else: # amplitude mode
-        raw_chunk_size = 65536
         effective_sample_rate = sample_rate / downsample_factor
         description = f"SDR magnitude (dB) recording at {frequency/1e6:.3f} MHz"
         print(f"  [Recorder] Amplitude (dB) data will be saved to: {data_filename}")
@@ -77,6 +79,7 @@ def sdr_record_and_process_thread(
     }
     with open(meta_filename, 'w') as f:
         json.dump(metadata, f, indent=4)
+    print(f"  [Recorder] Metadata saved to: {meta_filename}")
 
     recorded_samples_count = 0
     start_time_recording = time.monotonic()
@@ -96,7 +99,6 @@ def sdr_record_and_process_thread(
             timestamp = datetime.now(timezone.utc)
 
             if processing_method == 'fft_power':
-                # Process in smaller segments of fft_size
                 num_segments = len(samples) // fft_size
                 processed_values = []
                 for i in range(num_segments):
@@ -104,11 +106,8 @@ def sdr_record_and_process_thread(
                     power_db = process_fft_power(segment, fft_size, integration_bins)
                     processed_values.append(power_db)
                 
-                # To maintain compatibility, we create a stepped signal.
-                # Each calculated power value is repeated to match an equivalent downsample factor.
                 num_output_samples_per_segment = fft_size // downsample_factor
                 final_chunk = np.repeat(processed_values, num_output_samples_per_segment).astype(np.float32)
-                
                 print(f"\r  [Recorder] Time: {timestamp.strftime('%H:%M:%S')}, Power: {np.mean(processed_values):.2f} dB", end="", flush=True)
 
             else: # amplitude mode
@@ -121,7 +120,6 @@ def sdr_record_and_process_thread(
                     final_chunk = reshaped.max(axis=1).astype(np.float32)
                 print(f"\r  [Recorder] Samples written: {recorded_samples_count + len(final_chunk):,}", end="", flush=True)
 
-            # --- Write data and update plot (Common for both modes) ---
             output_file.write(final_chunk.tobytes())
             recorded_samples_count += len(final_chunk)
 
@@ -132,9 +130,8 @@ def sdr_record_and_process_thread(
                     plot_data_buffer.extend(final_chunk)
                     plot_time_buffer.extend(new_timestamps)
     finally:
-        if 'meta_filename' in locals():
-            metadata["captures"][0]["core:sample_count"] = recorded_samples_count
-            with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
+        metadata["captures"][0]["core:sample_count"] = recorded_samples_count
+        with open(meta_filename, 'w') as f: json.dump(metadata, f, indent=4)
         if output_file: output_file.close()
         print("\n[Recorder] Recording thread finished.")
 
