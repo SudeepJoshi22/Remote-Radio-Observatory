@@ -58,6 +58,7 @@ def sdr_record_and_process_thread(
     output_prefix: str,
     continuous: bool,
     downsample_factor: int,
+    downsample_method: str,
     plot_amplitude_buffer: collections.deque, # Passed from main thread
     plot_time_buffer: collections.deque,     # Passed from main thread
     stop_event: threading.Event,             # Passed from main thread
@@ -159,7 +160,7 @@ def sdr_record_and_process_thread(
                 print(f"\n[Recorder] Error reading samples: {e}. Stopping recording.")
                 stop_event.set() # Signal other threads to stop
                 break
-            
+            '''            
             # Calculate amplitude (magnitude)
             amplitude_chunk = np.abs(raw_samples_chunk)
             
@@ -172,7 +173,32 @@ def sdr_record_and_process_thread(
             # Write to file
             data_file.write(downsampled_power_db.tobytes())
             recorded_amplitude_samples_count += len(downsampled_power_db)
+            '''
+
+            # Calculate amplitude (magnitude)
+            amplitude_chunk = np.abs(raw_samples_chunk)
             
+            # Convert to dB (add a small epsilon to avoid log10(0))
+            power_db_chunk = 20 * np.log10(amplitude_chunk + 1e-12)
+
+            # --- Downsampling (Pooling) ---
+            trim_len = len(power_db_chunk) // downsample_factor * downsample_factor
+            reshaped = power_db_chunk[:trim_len].reshape(-1, downsample_factor)
+            
+            if downsample_method == 'avg':
+                downsampled_power_db = reshaped.mean(axis=1).astype(np.float32)
+            elif downsample_method == 'max':
+                downsampled_power_db = reshaped.max(axis=1).astype(np.float32)
+            elif downsample_method == 'rms':
+                downsampled_power_db = np.sqrt((reshaped**2).mean(axis=1)).astype(np.float32)
+            else:
+                raise ValueError(f"Unsupported downsampling method: {downsample_method}")
+
+            # Write to file
+            data_file.write(downsampled_power_db.tobytes())
+            recorded_amplitude_samples_count += len(downsampled_power_db)
+
+
             # Add to plot buffers if plotting is enabled
             if is_plotting_enabled:
                 # Generate timestamps for the downsampled amplitude data
@@ -283,6 +309,10 @@ if __name__ == "__main__":
         help="Record continuously until interrupted (Ctrl+C). Mutually exclusive with --duration."
     )
     parser.add_argument(
+        '--downsample-method', type=str, choices=['avg', 'max', 'rms'], default='avg',
+        help="Downsampling method: 'avg' = average pooling, 'max' = max pooling, 'rms' = RMS pooling. Default: avg."
+    )
+    parser.add_argument(
         '--downsample', type=int, default=1000,
         help="Factor by which to downsample amplitude data (e.g., 1000 means 1 sample per 1000 raw samples). Default: 1000."
     )
@@ -339,8 +369,8 @@ if __name__ == "__main__":
             target=sdr_record_and_process_thread,
             args=(sdr_instance, args.freq, args.sample_rate, gain_val, 
                   args.duration, output_prefix_val, args.continuous, 
-                  args.downsample, plot_amplitude_buffer, plot_time_buffer, stop_event, args.plot, plot_buffer_lock) # NEW: Pass the lock
-        )
+                  args.downsample, args.downsample_method, plot_amplitude_buffer, plot_time_buffer, stop_event, args.plot, plot_buffer_lock)
+            )
         recording_thread.daemon = True # Allow main program to exit even if thread is running
         recording_thread.start()
 
