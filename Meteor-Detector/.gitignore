@@ -1,5 +1,8 @@
+*.png
+/__pycache__
 *.swp
 *.iq
 *.wav
 /venv
 /recordings
+/fm_*
