@@ -36,6 +36,47 @@ def convert_timestamps_to_utc(timestamp_ns):
     return [datetime.fromtimestamp(ts, tz=timezone.utc) for ts in timestamp_s]
 
 
+def load_and_combine_npz_files(filepaths):
+    """Load and combine multiple .npz files into a single dataset"""
+    try:
+        # Load all files and collect data
+        all_data = {}
+        all_timestamps = []
+
+        for filepath in filepaths:
+            data = np.load(filepath)
+            # Collect timestamps for sorting
+            if 't_utc_ns' in data.files:
+                all_timestamps.extend(list(data['t_utc_ns']))
+
+            # Collect all other data
+            for key in data.files:
+                if key not in all_data:
+                    all_data[key] = []
+                all_data[key].extend(list(data[key]))
+            data.close()
+
+        # Sort all data by timestamp
+        if all_timestamps and len(all_timestamps) == len(all_data.get('t_utc_ns', [])):
+            sort_indices = np.argsort(all_timestamps)
+            # Reorder all arrays by sorted timestamps
+            for key in all_data:
+                all_data[key] = np.array(all_data[key])[sort_indices]
+
+            print(f"Combined {len(filepaths)} files into dataset with {len(all_data['t_utc_ns'])} total samples (sorted by time)")
+            return all_data
+        else:
+            # Fallback: just concatenate in file order
+            for key in all_data:
+                all_data[key] = np.array(all_data[key])
+            print(f"Combined {len(filepaths)} files into dataset with {len(all_data.get('t_utc_ns', []))} total samples (concatenated order)")
+            return all_data
+
+    except Exception as e:
+        print(f"Error combining files: {e}")
+        return None
+
+
 def plot_observation(data, show_peaks=True, show_snr=True, highlight_triggers=True,
                     save_plot=False, output_file=None):
     """Create plots from observation data"""
@@ -44,9 +85,15 @@ def plot_observation(data, show_peaks=True, show_snr=True, highlight_triggers=Tr
     timestamps_ns = data['t_utc_ns']
     power_dbfs = data['power_dbfs']
     noise_dbfs = data['noise_dbfs']
-    peak_dbfs = data['peak_dbfs'] if 'peak_dbfs' in data.files else None
-    snr_db = data['snr_db'] if 'snr_db' in data.files else None
-    trigger = data['trigger'] if 'trigger' in data.files else None
+    # Handle both npz file object and regular dict
+    has_peak_dbfs = ('peak_dbfs' in data.files if hasattr(data, 'files') else 'peak_dbfs' in data)
+    has_snr_db = ('snr_db' in data.files if hasattr(data, 'files') else 'snr_db' in data)
+    has_trigger = ('trigger' in data.files if hasattr(data, 'files') else 'trigger' in data)
+    has_threshold_db = ('threshold_db' in data.files if hasattr(data, 'files') else 'threshold_db' in data)
+
+    peak_dbfs = data['peak_dbfs'] if has_peak_dbfs else None
+    snr_db = data['snr_db'] if has_snr_db else None
+    trigger = data['trigger'] if has_trigger else None
     station = data['station'][0] if len(data['station']) > 0 else "Unknown"
     center_freq = data['center_freq_hz'][0]
 
@@ -71,7 +118,7 @@ def plot_observation(data, show_peaks=True, show_snr=True, highlight_triggers=Tr
         trigger_times = [utc_times[i] for i in range(len(trigger)) if trigger[i]]
         trigger_power = [power_dbfs[i] for i in range(len(trigger)) if trigger[i]]
         if trigger_times:
-            threshold_val = data["threshold_db"][0] if "threshold_db" in data.files else 6
+            threshold_val = data["threshold_db"][0] if has_threshold_db else 6
             ax1.scatter(trigger_times, trigger_power, color='red', s=20, zorder=5,
                        label=f'Triggers (>{threshold_val} dB)')
 
@@ -106,7 +153,7 @@ def plot_observation(data, show_peaks=True, show_snr=True, highlight_triggers=Tr
                            label='Triggers')
 
         # Add threshold line if available
-        if 'threshold_db' in data.files:
+        if has_threshold_db:
             threshold = data['threshold_db'][0]
             ax3.axhline(y=threshold, color='red', linestyle='--', alpha=0.7,
                        label=f'Threshold ({threshold} dB)')
@@ -148,7 +195,7 @@ def plot_observation(data, show_peaks=True, show_snr=True, highlight_triggers=Tr
 
 def main():
     parser = argparse.ArgumentParser(description='Plot FM meteor scatter observation data')
-    parser.add_argument('npz_file', nargs='?', help='Specific .npz file to plot (if not provided, shows latest)')
+    parser.add_argument('npz_file', nargs='?', help='Specific .npz file to plot, or pattern with wildcards (e.g., MUMBAI_*.npz) to plot all matching files')
     parser.add_argument('--dir', type=str, default='./fm_observations',
                         help='Directory to search for .npz files (default: ./fm_observations)')
     parser.add_argument('--no-peaks', action='store_true',
@@ -178,12 +225,35 @@ def main():
             print(f"No .npz files found in {args.dir}")
         return
 
-    # Determine file to load
+    # Determine files to load
     if args.npz_file:
-        filepath = args.npz_file if os.path.isabs(args.npz_file) else os.path.join(args.dir, args.npz_file)
-        if not os.path.exists(filepath):
-            print(f"File not found: {filepath}")
-            return
+        # Check if npz_file contains wildcards
+        if '*' in args.npz_file or '?' in args.npz_file:
+            # Handle wildcard pattern
+            pattern = os.path.join(args.dir, args.npz_file) if not os.path.isabs(args.npz_file) else args.npz_file
+            filepaths = sorted(glob.glob(pattern))
+            if not filepaths:
+                print(f"No files matching pattern '{args.npz_file}' found in {args.dir}")
+                return
+            print(f"Found {len(filepaths)} files matching pattern '{args.npz_file}'")
+            # Load and combine data from multiple files
+            data = load_and_combine_npz_files(filepaths)
+            if data is None:
+                return
+            # For naming output file when saving
+            base_name = os.path.splitext(os.path.basename(filepaths[0]))[0]
+            if len(filepaths) > 1:
+                base_name += f"_combined_{len(filepaths)}files"
+        else:
+            # Single file specified
+            filepath = args.npz_file if os.path.isabs(args.npz_file) else os.path.join(args.dir, args.npz_file)
+            if not os.path.exists(filepath):
+                print(f"File not found: {filepath}")
+                return
+            data = load_npz_file(filepath)
+            if data is None:
+                return
+            base_name = os.path.splitext(os.path.basename(filepath))[0]
     else:
         # Find latest file
         pattern = os.path.join(args.dir, "*.npz")
@@ -193,11 +263,10 @@ def main():
             return
         filepath = files[-1]  # Most recent
         print(f"Using latest file: {os.path.basename(filepath)}")
-
-    # Load data
-    data = load_npz_file(filepath)
-    if data is None:
-        return
+        data = load_npz_file(filepath)
+        if data is None:
+            return
+        base_name = os.path.splitext(os.path.basename(filepath))[0]
 
     # Determine output filename for saving
     output_file = None
@@ -205,7 +274,12 @@ def main():
         if args.output:
             output_file = args.output
         else:
-            base_name = os.path.splitext(os.path.basename(filepath))[0]
+            output_file = f"{base_name}_plot.png"
+    output_file = None
+    if args.save:
+        if args.output:
+            output_file = args.output
+        else:
             output_file = f"{base_name}_plot.png"
 
     # Create plots
