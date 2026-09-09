@@ -1,14 +1,29 @@
+import argparse
+import os
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, CheckButtons
-import os
 
 # === Configuration ===
-filename = 'output2.iq'    # Your SDR IQ file
-sample_rate = 2.56e6       # Hz
-dtype = np.int8            # IQ format: int8
-window_duration = 2.0      # Seconds per viewing window
-decimate = 1000            # Downsample factor for display
+_p = argparse.ArgumentParser(description="Interactive viewer for raw rtl_sdr IQ files")
+_p.add_argument('filename', nargs='?', default='output.iq',
+                help="IQ file written by rtl_sdr (uint8 interleaved I,Q)")
+_p.add_argument('--sample-rate', type=float, default=2.56e6, help="Hz")
+_p.add_argument('--window', type=float, default=2.0, help="seconds per view")
+_p.add_argument('--decimate', type=int, default=1000, help="display decimation")
+_args = _p.parse_args()
+
+filename = _args.filename
+sample_rate = _args.sample_rate
+window_duration = _args.window
+decimate = _args.decimate
+
+# rtl_sdr writes UNSIGNED 8-bit interleaved I,Q with zero at 127.5. Reading it
+# as int8 (as this file used to) wraps every sample above 127 to negative and
+# leaves the DC offset in place, so nothing decodes correctly.
+DTYPE = np.uint8
+U8_ZERO = 127.5
 
 # === Compute total duration from file size ===
 file_size_bytes = os.path.getsize(filename)
@@ -34,14 +49,22 @@ def read_iq_window(start_time):
     if len(raw) % 2 != 0:
         raw = raw[:-1]  # Ensure I/Q pairs
 
-    iq = raw[::2] + 1j * raw[1::2]
-    magnitude = np.abs(iq)
-    db = 20 * np.log10(magnitude + 1e-6)
-    time = np.arange(len(db)) / sample_rate + start_time
+    i = (raw[0::2].astype(np.float32) - U8_ZERO) / U8_ZERO
+    q = (raw[1::2].astype(np.float32) - U8_ZERO) / U8_ZERO
+    iq = i + 1j * q
+    power = np.abs(iq) ** 2
+    time = np.arange(len(power)) / sample_rate + start_time
 
-    # Downsample for time-domain plot
-    time_ds = time[::decimate]
-    db_ds = db[::decimate]
+    # Decimate by INTEGRATING, not by keeping every Nth sample. Subsampling
+    # aliases and can drop a short transient entirely between kept points --
+    # at decimate=1000 and 2.56 MS/s that is a 0.4 ms blind spot per point.
+    # Max-hold is carried alongside the mean so brief events survive.
+    n = len(power) // decimate * decimate
+    if n == 0:
+        return np.array([]), np.array([]), iq
+    blocks = power[:n].reshape(-1, decimate)
+    db_ds = 10 * np.log10(blocks.max(axis=1) + 1e-12)
+    time_ds = time[:n:decimate]
 
     return time_ds, db_ds, iq
 
@@ -59,7 +82,6 @@ ax.set_xlabel('Time (s)')
 ax.set_ylabel('Amplitude (dBFS)')
 ax.set_title('IQ Signal Viewer (dBFS)')
 ax.grid(True)
-ax.invert_yaxis()
 ax.legend()
 
 # === Slider setup ===
@@ -88,7 +110,10 @@ check = CheckButtons(ax_check, ['Show Max-Hold', 'Show FFT'], [True, True])
 
 # === Update function ===
 def update(val):
-    global max_hold_trace
+    # time_data/amp_data must be declared global: without this they were
+    # rebound as locals here, so the CSV export always wrote the t=0 window
+    # no matter where the slider had been moved.
+    global max_hold_trace, time_data, amp_data, iq_data
     start = time_slider.val
     time_data, amp_data, iq_data = read_iq_window(start)
 
