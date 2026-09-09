@@ -271,16 +271,7 @@ def main():
     # Determine output filename for saving
     output_file = None
     if args.save:
-        if args.output:
-            output_file = args.output
-        else:
-            output_file = f"{base_name}_plot.png"
-    output_file = None
-    if args.save:
-        if args.output:
-            output_file = args.output
-        else:
-            output_file = f"{base_name}_plot.png"
+        output_file = args.output or f"{base_name}_plot.png"
 
     # Create plots
     plot_observation(

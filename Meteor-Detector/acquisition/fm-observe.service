@@ -1,0 +1,41 @@
+# Always-on FM meteor scatter recorder.
+#
+#   sudo cp fm-observe.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now fm-observe
+#   journalctl -u fm-observe -f
+#
+# Edit User, WorkingDirectory and the --freq/--gain/--station arguments first.
+# Take the gain from `rf_check.py --sweep`; never use auto.
+
+[Unit]
+Description=FM meteor scatter observer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sudeep
+WorkingDirectory=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/acquisition
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/venv/bin/python \
+    fm_observe.py \
+    --freq 107.1e6 \
+    --gain 35 \
+    --sample-rate 1.024e6 \
+    --station SIRSI \
+    --threshold-db 6 \
+    --output-dir /home/sudeep/fm_observations \
+    --save-iq
+
+# The dongle occasionally drops off the USB bus; just come back.
+Restart=always
+RestartSec=10
+
+# Let it settle before the first samples are trusted: a non-TCXO dongle
+# drifts for the first ~20 minutes as it warms up.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
