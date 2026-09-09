@@ -1,6 +1,3 @@
-[submodule "Meteor-Detector/MeteorRadio"]
-	path = Meteor-Detector/MeteorRadio
-	url = git@github.com:rabssm/MeteorRadio.git
 [submodule "Meteor-Detector/MeteorRadioFM"]
 	path = Meteor-Detector/MeteorRadioFM
 	url = git@github.com:SudeepJoshi22/MeteorRadio-FM.git

@@ -1,0 +1,13 @@
+# Core acquisition and analysis
+numpy>=2.2.3
+scipy>=1.15.1
+matplotlib>=3.10.0
+pandas>=2.2.3
+
+# RTL-SDR control. Needs the librtlsdr system library:
+#   sudo apt install rtl-sdr librtlsdr-dev
+pyrtlsdr>=0.3.0
+
+# Web viewer (Meteor-Detector/sdr-viewer/server.py) -- was previously an
+# undeclared dependency, so the viewer failed to start on a fresh install.
+flask>=3.0.0

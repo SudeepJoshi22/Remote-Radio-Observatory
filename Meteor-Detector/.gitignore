@@ -1,8 +1,14 @@
 *.png
 /__pycache__
+__pycache__/
 *.swp
+*.pyc
 *.iq
 *.wav
-/venv
-/recordings
-/fm_*
+venv/
+recordings/
+# Output directories only. This was "/fm_*", which also matched
+# fm_observe_npz.py and silently kept the main observer script out of the
+# repository until it was lost.
+/fm_observations/
+/fm_observations_*/
