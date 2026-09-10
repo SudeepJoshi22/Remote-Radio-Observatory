@@ -221,6 +221,53 @@ things to expect:
 `libusb-1.0.dll` on `PATH`, plus **Zadig** binding **WinUSB** to
 "Bulk-In, Interface (Interface 0)".
 
+### Troubleshooting
+
+**`undefined symbol: rtlsdr_set_dithering` on import**
+
+```
+AttributeError: /usr/lib/x86_64-linux-gnu/librtlsdr.so:
+undefined symbol: rtlsdr_set_dithering
+```
+
+pyrtlsdr 0.4.0 and later bind that symbol unconditionally at import, and it
+exists only in the **rtl-sdr-blog fork** of librtlsdr — not in the mainline
+Osmocom build that Debian and Ubuntu package. `requirements.txt` therefore pins
+`pyrtlsdr>=0.3.0,<0.4`, which works against the packaged library. If pip has
+pulled a newer one:
+
+```bash
+pip install "pyrtlsdr>=0.3.0,<0.4" "setuptools<81"
+```
+
+The `setuptools` bound is needed too: pyrtlsdr 0.3.0 imports `pkg_resources`,
+which setuptools 81 removed.
+
+*Optional upgrade path.* If you later want pyrtlsdr 0.5.0 — no deprecated
+dependencies, plus official V4 and dithering support — build the blog fork
+instead of pinning:
+
+```bash
+sudo apt install build-essential cmake libusb-1.0-0-dev
+git clone https://github.com/rtlsdrblog/rtl-sdr-blog
+cd rtl-sdr-blog && mkdir build && cd build
+cmake ../ -DINSTALL_UDEV_RULES=ON && make && sudo make install && sudo ldconfig
+pip install "pyrtlsdr>=0.5" "setuptools"
+```
+
+This matters mainly for **HF below 24 MHz**, where the V4 uses an upconverter.
+At the ~100 MHz this project works at, the tuner is direct and the packaged
+library is fine, so it is not worth destabilising a working rig mid-experiment.
+
+**`usb_claim_interface error -6` / `Failed to open rtlsdr device #0`**
+
+The kernel's DVB-T driver has the dongle. See *Drivers* above; after
+blacklisting, unplug and replug so it re-enumerates.
+
+**No devices found under WSL** — the dongle is not attached. Re-run
+`usbipd attach --wsl --busid <BUSID>` from PowerShell; the attachment does not
+survive a reboot or replug.
+
 ### Using more than one dongle
 
 A generic DVB-T stick and a purpose-built RTL-SDR both enumerate as RTL2832U

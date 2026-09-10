@@ -117,8 +117,13 @@ fi
 # --------------------------------------------------------------------------
 echo "==> Creating the Python environment"
 python3 -m venv venv
-./venv/bin/pip install --quiet --upgrade pip setuptools
+./venv/bin/pip install --quiet --upgrade pip
+# NOTE: do not --upgrade setuptools here. requirements.txt pins it below 81
+# because pyrtlsdr 0.3.0 imports pkg_resources, which setuptools 81 removed.
 ./venv/bin/pip install --quiet -r ../requirements.txt
+
+echo "    pyrtlsdr $(./venv/bin/pip show pyrtlsdr 2>/dev/null | awk '/^Version/{print $2}') "\
+     "against librtlsdr $(dpkg-query -W -f='${Version}' librtlsdr0 2>/dev/null || echo '?')"
 
 # --------------------------------------------------------------------------
 echo "==> Verifying the DSP (no hardware needed)"

@@ -6,8 +6,21 @@ pandas>=2.2.3
 
 # RTL-SDR control. Needs the librtlsdr system library:
 #   sudo apt install rtl-sdr librtlsdr-dev
-pyrtlsdr>=0.3.0
+#
+# The upper bound is load-bearing. pyrtlsdr 0.4.0+ binds
+# rtlsdr_set_dithering unconditionally at import, and that symbol exists
+# only in the rtl-sdr-blog fork of librtlsdr -- not in the mainline
+# Osmocom build that Debian and Ubuntu ship. Against the packaged library
+# it fails on import with:
+#
+#   AttributeError: /usr/lib/.../librtlsdr.so: undefined symbol:
+#   rtlsdr_set_dithering
+#
+# See acquisition/README.md for the blog-fork route if you want 0.5.0.
+pyrtlsdr>=0.3.0,<0.4
 
-# Web viewer (Meteor-Detector/sdr-viewer/server.py) -- was previously an
-# undeclared dependency, so the viewer failed to start on a fresh install.
+# pyrtlsdr 0.3.0 imports pkg_resources, which setuptools 81 removed.
+setuptools<81
+
+# Web viewer in legacy/sdr-viewer/
 flask>=3.0.0
