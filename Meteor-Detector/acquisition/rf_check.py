@@ -744,27 +744,60 @@ so the amplifier stays powered and in its normal operating state.
           f"{'width kHz':>10}  verdict")
     print("-" * 72)
 
-    external = internal = 0
+    external = internal = emi = stations = 0
+    emi_freqs = []
     for pk, w in found:
         drop = db1[pk] - db2[pk]
-        if drop >= 6:
-            v = ok("EXTERNAL - really on the air"); external += 1
-        elif drop >= 3:
-            v = warn("ambiguous")
-        else:
+        if drop < 3:
             v = bad("INTERNAL - generated in your receiver"); internal += 1
+        elif drop < 6:
+            v = warn("ambiguous")
+        elif w >= 100:
+            v = ok("FM STATION - on the air"); external += 1; stations += 1
+        elif w >= 30:
+            v = ok("modulated - candidate station"); external += 1; stations += 1
+        else:
+            # Reaching the antenna does not make it broadcast. Anything under
+            # ~30 kHz is far too narrow for a transmission and is almost always
+            # a clock or switching-supply harmonic radiating nearby.
+            v = warn("external EMI - real RF, not a station")
+            external += 1; emi += 1
+            emi_freqs.append(f[pk])
         print(f"{f[pk]/1e6:>10.3f} {db1[pk]:>8.1f} {db2[pk]:>8.1f} "
               f"{drop:>+7.1f} {w:>10.1f}  {v}")
 
+    # Clock harmonics share a common base frequency. Finding it points at the
+    # offending device far faster than chasing each spur separately.
+    if len(emi_freqs) >= 3:
+        best_base, best_hits = None, 0
+        for base_khz in (8, 16, 24, 25, 32, 48, 50, 64, 96, 100, 125, 128, 256):
+            b = base_khz * 1e3
+            hits = sum(1 for x in emi_freqs
+                       if abs(round(x / b) - x / b) < 2e-4)
+            if hits > best_hits:
+                best_base, best_hits = base_khz, hits
+        if best_base and best_hits >= 3:
+            print(f"\n  {best_hits} of {len(emi_freqs)} EMI lines are multiples of "
+                  f"{best_base} kHz -- a common clock.")
+
     hr("VERDICT")
-    if external:
-        print(f"  {PASS}  {external} signal(s) confirmed external.")
+    if stations:
+        print(f"  {PASS}  {stations} signal(s) wide enough to be a real")
+        print("        transmission, and confirmed external. That is a")
+        print("        receivable station -- use it as a positive control.")
+    if emi:
+        print(f"\n  {WARN}  {emi} narrowband EMI line(s). These ARE outside the")
+        print("        dongle, but nothing broadcast is under 30 kHz wide. They")
+        print("        are clock or switching-supply harmonics radiating into")
+        print("        the antenna -- most likely your own laptop, its charger,")
+        print("        or the USB link.")
+        print("        They matter: one landing in your chosen channel will")
+        print("        trigger the detector. Pick a channel clear of them, and")
+        print("        re-measure at the real site away from computing kit.")
     if internal:
-        print(f"  {FAIL}  {internal} signal(s) are generated inside the receiver.")
-        print("        If your LNA is the source, try: a better-matched input,")
-        print("        an FM band-pass filter ahead of it, shorter leads, or")
-        print("        shielding. Until these are gone every detection threshold")
-        print("        you set is competing with your own hardware.")
+        print(f"\n  {FAIL}  {internal} signal(s) generated inside the receiver.")
+        print("        If an LNA is fitted, suspect it first: a band-pass filter")
+        print("        ahead of it, a better input match, or shielding.")
     if not found:
         print(f"  {WARN}  nothing above threshold in either sweep -- an empty")
         print("        band. Expected here; use --floor-test for the verdict.")
