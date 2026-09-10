@@ -194,15 +194,60 @@ sudo modprobe -r dvb_usb_rtl28xxu   # if it does
 rtl_test -t                         # should find and open the device
 ```
 
-**Windows.** `install.sh` does not apply. You need:
+**WSL2 (Windows Subsystem for Linux).** WSL2 has no direct USB access, so the
+dongle must be forwarded from Windows with `usbipd-win`. Zadig is *not* needed
+on this route — usbipd hands the raw device through and the Linux side owns the
+driver.
 
-1. `librtlsdr.dll` and `libusb-1.0.dll` beside the scripts or on `PATH`, from an
-   rtl-sdr Windows release.
-2. **Zadig** to bind the **WinUSB** driver to the dongle — this is the
-   equivalent of the blacklist step. Without it Windows keeps its own DVB driver
-   attached and `pyrtlsdr` cannot open the device. In Zadig, tick
-   *Options → List All Devices*, select "Bulk-In, Interface (Interface 0)", and
-   install WinUSB.
+```powershell
+winget install usbipd                    # once, PowerShell
+
+usbipd list                              # find the BUSID
+usbipd bind   --busid <BUSID>            # once per device, as Administrator
+usbipd attach --wsl --busid <BUSID>      # after every reboot or replug
+```
+
+`lsusb` inside WSL should then list it, and `install.sh` applies normally. Two
+things to expect:
+
+- **udev may not run** without systemd enabled, so device permissions can need
+  `sudo` even after the rules are installed.
+- **USB-over-IP adds latency.** If `fm_observe.py` reports dropped blocks, drop
+  `--sample-rate` to `250e3`. The recorder counts drops and prints the
+  percentage precisely so this is visible rather than silently corrupting
+  timing. WSL is fine for the Phase 0 checks; do long recordings on the Pi.
+
+**Native Windows** (not WSL) is a different route: `librtlsdr.dll` and
+`libusb-1.0.dll` on `PATH`, plus **Zadig** binding **WinUSB** to
+"Bulk-In, Interface (Interface 0)".
+
+### Using more than one dongle
+
+A generic DVB-T stick and a purpose-built RTL-SDR both enumerate as RTL2832U
+devices and both work here, but they usually carry different tuner chips, which
+changes the available gain steps and the noise figure. List what is attached:
+
+```bash
+python3 rf_check.py --list-devices
+```
+
+```
+ idx  serial           tuner          gains dB  name
+   0  00000001         R820T/R820T2   29
+   1  00000001         R828D          29
+```
+
+Then pass `-D <idx>` to any check. The index comes from the USB stack and is
+**not stable across replugs**, so re-check it rather than assuming.
+
+Comparing two dongles is worth doing properly: run `--floor-test --no-lna` and
+`--gain-linearity` on each. The one with the larger floor delta and the higher
+SNR plateau has the better noise figure, and that is the one to put on the
+antenna.
+
+Note the blacklist in `install.sh` stops these dongles working as actual DVB-T
+television receivers. If you need one back for TV, delete
+`/etc/modprobe.d/blacklist-rtlsdr.conf` and reboot.
 
 `--selftest` and `test_pipeline.py` need no dongle at all, so run those first to
 confirm the Python side works before fighting drivers.

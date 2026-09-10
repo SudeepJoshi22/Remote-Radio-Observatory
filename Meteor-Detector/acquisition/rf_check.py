@@ -80,7 +80,70 @@ def hr(title=""):
 # SDR helper
 # --------------------------------------------------------------------------
 
-def open_sdr(fs, freq, gain):
+TUNER_NAMES = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013",
+               4: "FC2580", 5: "R820T/R820T2", 6: "R828D"}
+
+
+def list_devices():
+    """Enumerate attached dongles.
+
+    Worth running whenever more than one is plugged in: the index that `-D`
+    takes is assigned by the USB stack and is not stable across replugs, so
+    check it rather than assuming. The tuner chip differs between a generic
+    DVB-T stick and a purpose-built RTL-SDR, and it determines the available
+    gain steps and the noise figure you can expect.
+    """
+    try:
+        from rtlsdr import RtlSdr
+    except ImportError:
+        print(bad("pyrtlsdr is not installed. pip install pyrtlsdr"))
+        return 2
+
+    serials = []
+    try:
+        serials = RtlSdr.get_device_serial_addresses()
+    except Exception as e:
+        print(warn(f"could not enumerate serials: {e}"))
+
+    if not serials:
+        print(bad("No RTL-SDR devices found."))
+        if os.path.exists("/proc/version"):
+            try:
+                if "microsoft" in open("/proc/version").read().lower():
+                    print("\nRunning under WSL. USB devices are not visible to")
+                    print("WSL until they are attached from Windows with usbipd:")
+                    print("\n  (PowerShell as Administrator, on the Windows side)")
+                    print("    usbipd list")
+                    print("    usbipd bind   --busid <BUSID>")
+                    print("    usbipd attach --wsl --busid <BUSID>")
+                    print("\nThen re-run this. `lsusb` inside WSL should show it.")
+            except OSError:
+                pass
+        return 1
+
+    print(f"{'idx':>4}  {'serial':<16} {'tuner':<14} {'gains dB':<8}  name")
+    print("-" * 72)
+    for i, ser in enumerate(serials):
+        name = tuner = ngains = "?"
+        try:
+            d = RtlSdr(device_index=i)
+            try:
+                tuner = TUNER_NAMES.get(d.get_tuner_type(), "unknown")
+            except Exception:
+                pass
+            try:
+                ngains = str(len(d.valid_gains_db))
+            except Exception:
+                pass
+            d.close()
+        except Exception as e:
+            name = f"could not open: {e}"
+        print(f"{i:>4}  {str(ser):<16} {tuner:<14} {ngains:<8}  {name}")
+    print(f"\nSelect one with  -D <idx>  (default 0).")
+    return 0
+
+
+def open_sdr(fs, freq, gain, device=0):
     """Open the dongle with AGC explicitly off and a fixed manual gain.
 
     This matters more than it looks. Automatic gain control continuously
@@ -94,7 +157,12 @@ def open_sdr(fs, freq, gain):
         print(bad("pyrtlsdr is not installed. pip install pyrtlsdr"))
         sys.exit(2)
 
-    sdr = RtlSdr()
+    try:
+        sdr = RtlSdr(device_index=device)
+    except Exception as e:
+        print(bad(f"could not open device {device}: {e}"))
+        print("Run  rf_check.py --list-devices  to see what is attached.")
+        sys.exit(2)
     sdr.sample_rate = fs
     sdr.center_freq = freq
 
@@ -238,7 +306,7 @@ def _sweep_band(args, sdr=None, label=""):
 
     own = sdr is None
     if own:
-        sdr = open_sdr(fs, float(centers[0]), args.gain)
+        sdr = open_sdr(fs, float(centers[0]), args.gain, args.device)
     win, sumsq = dsp.make_window(nfft, "hann")
 
     all_f, all_p = [], []
@@ -393,7 +461,7 @@ def cmd_stability(args):
     print("receiver, not the sky.\n")
 
     fs = args.sample_rate
-    sdr = open_sdr(fs, args.freq, args.gain)
+    sdr = open_sdr(fs, args.freq, args.gain, args.device)
     m = dsp.ChannelMetrics(fs, args.nfft, args.freq, channel_bw=args.channel_bw)
     print("  " + m.describe().replace("\n", "\n  ") + "\n")
 
@@ -499,7 +567,7 @@ WHERE TO DISCONNECT (this matters with a line amplifier):
 Choose a QUIET frequency -- any real signal masks the effect.
 """)
     fs = args.sample_rate
-    sdr = open_sdr(fs, args.freq, args.gain)
+    sdr = open_sdr(fs, args.freq, args.gain, args.device)
     m = dsp.ChannelMetrics(fs, args.nfft, args.freq, channel_bw=args.channel_bw)
 
     try:
@@ -587,7 +655,7 @@ signals that look convincing on a waterfall.
 Disconnect at the ANTENNA side of the LNA, not between the LNA and the dongle,
 so the amplifier stays powered and in its normal operating state.
 """)
-    sdr = open_sdr(args.sample_rate, args.start, args.gain)
+    sdr = open_sdr(args.sample_rate, args.start, args.gain, args.device)
     df = args.sample_rate / args.nfft
     try:
         input(bold("  [1] Antenna CONNECTED. Press Enter to sweep..."))
@@ -658,7 +726,7 @@ month of recording: a compressed front end suppresses exactly the brief
 excursions a meteor produces.
 """)
     fs = args.sample_rate
-    sdr = open_sdr(fs, args.freq, args.gain)
+    sdr = open_sdr(fs, args.freq, args.gain, args.device)
     gains = list(getattr(sdr, "valid_gains_db", []) or [0, 9, 15, 21, 25, 30,
                                                        35, 40, 44, 49.6])
     m = dsp.ChannelMetrics(fs, args.nfft, args.freq, channel_bw=args.channel_bw)
@@ -886,6 +954,8 @@ def main():
   6. --sweep            survey the band, pick a quiet channel
   7. --sidereal         48h+ proof the antenna sees the sky""")
     mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--list-devices", action="store_true",
+                      help="enumerate attached dongles with tuner type and index")
     mode.add_argument("--selftest", action="store_true",
                       help="verify the DSP against synthetic signals (no hardware)")
     mode.add_argument("--sweep", action="store_true",
@@ -905,6 +975,9 @@ def main():
                       help="analyse 48h+ of recorded .npz for the 23h56m "
                            "signature of galactic noise")
 
+    p.add_argument("-D", "--device", type=int, default=0,
+                   help="dongle index when more than one is attached; "
+                        "see --list-devices")
     p.add_argument("-g", "--gain", default="35",
                    help="FIXED tuner gain in dB. 'auto' is rejected by design.")
     p.add_argument("-s", "--sample-rate", type=float, default=2.048e6)
@@ -931,6 +1004,8 @@ def main():
 
     args = p.parse_args()
     try:
+        if args.list_devices:
+            return list_devices()
         if args.selftest:
             return cmd_selftest(args)
         if args.sweep:

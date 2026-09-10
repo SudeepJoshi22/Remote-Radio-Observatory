@@ -292,7 +292,12 @@ def run(args):
         return 2
     frame_rate = fs / nfft
 
-    sdr = RtlSdr()
+    try:
+        sdr = RtlSdr(device_index=args.device)
+    except Exception as e:
+        log(f"could not open device {args.device}: {e}")
+        log("Run  rf_check.py --list-devices  to see what is attached.")
+        return 2
     sdr.sample_rate = fs
     sdr.center_freq = args.freq
 
@@ -342,6 +347,7 @@ def run(args):
     log("=" * 62)
     log(f"station     {args.station}")
     log(f"frequency   {args.freq/1e6:.4f} MHz")
+    log(f"device      index {args.device}")
     log(f"gain        {sdr.gain} dB (fixed, AGC off)")
     for line in metrics.describe().split("\n"):
         log(f"            {line}")
@@ -480,6 +486,8 @@ def main():
     p.add_argument("-s", "--sample-rate", type=float, default=1.024e6,
                    help="Hz. Valid RTL-SDR ranges are 225001-300000 and "
                         "900001-3200000; 1.024e6 leaves room for guard bands")
+    p.add_argument("-D", "--device", type=int, default=0,
+                   help="dongle index when more than one is attached")
     p.add_argument("-g", "--gain", default="35",
                    help="FIXED tuner gain in dB. 'auto' is rejected by design")
     p.add_argument("--nfft", type=int, default=8192,

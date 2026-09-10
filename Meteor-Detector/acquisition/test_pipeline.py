@@ -61,7 +61,8 @@ def make_fake_rtlsdr():
     rng = np.random.default_rng(12345)
 
     class FakeRtlSdr:
-        def __init__(self):
+        def __init__(self, device_index=0, **kwargs):
+            self.device_index = device_index
             self.sample_rate = FS
             self.center_freq = 100e6
             self.gain = 0.0
@@ -112,7 +113,8 @@ def main():
     print(f"output: {outdir}\n" + "-" * 62)
 
     args = types.SimpleNamespace(
-        freq=107.1e6, sample_rate=FS, gain="35", nfft=NFFT, window="hann",
+        freq=107.1e6, sample_rate=FS, gain="35", device=0,
+        nfft=NFFT, window="hann",
         channel_bw=180e3, guard_lo=150e3, guard_hi=400e3,
         floor_seconds=3.0, floor_percentile=10.0,
         threshold_db=6.0, hysteresis_db=2.0, min_frames=2, refractory_s=1.0,
