@@ -120,6 +120,59 @@ solar day.
 Ten days is the minimum, three to four weeks is convincing. A sidereal drift
 cannot be imitated by any local interference.
 
+## Bench test: bare antenna into the SDR, no preamp
+
+Worth doing before committing to the full setup. It establishes a **control**:
+every number measured here becomes the reference for judging whether the LNA and
+the Yagi actually improve things.
+
+```bash
+python3 rf_check.py --selftest                       # software intact?
+python3 rf_check.py --floor-test --no-lna -g 49.6    # antenna connected?
+python3 rf_check.py --spur-test -g 49.6 --save bare_spurs.npz
+python3 rf_check.py --gain-linearity -f 107.1e6
+python3 rf_check.py --sweep -g 49.6 --save bare_sweep.npz
+```
+
+**Pass `--no-lna`.** A bare RTL-SDR tuner is NF 3.5–6 dB against 0.5–2 dB for a
+preamp, so its own noise sits much closer to the sky's and the floor lifts far
+less. Expect **3–8 dB, centred near 5**, not the 8–16 dB of a preamped chain.
+Without the flag the tool judges against the LNA range and calls a healthy bare
+setup a WARN.
+
+Use **maximum gain** (`-g 49.6`) here. With no preamp you need every dB, and
+with nothing amplifying ahead of it there is little risk of overloading.
+
+Three things this baseline buys you:
+
+1. **A spur fingerprint.** With no LNA, every narrow feature `--spur-test` finds
+   is the dongle's own. Save it. If new spurs appear once the LNA is fitted, the
+   amplifier is the source — that is otherwise very hard to pin down.
+2. **A floor-delta reference.** Adding a good LNA should push the delta from
+   ~5 dB toward 10–15 dB. If it does not improve, the LNA is not helping and may
+   be hurting.
+3. **A gain reference.** Compare the knee `--gain-linearity` reports before and
+   after the preamp.
+
+**Location matters more than usual.** Indoors beside a laptop, monitor or
+switching supply, the floor delta can reach 15–25 dB from man-made interference
+alone. That proves the antenna is connected, but it is not sky sensitivity — the
+tool warns when the delta exceeds 18 dB for this reason. Repeat outdoors, away
+from buildings, for a number that means something.
+
+**Positive control at Sirsi:** FM has been audible toward Mangalore (bearing
+178°) with a monopole. Point the antenna south and check `--sweep` finds a
+feature ~180 kHz wide there. That is the one signal known to be receivable at
+this site, so seeing it end-to-end validates the whole chain.
+
+### On Windows
+
+`pyrtlsdr` needs `librtlsdr.dll` and `libusb-1.0.dll` findable — put them beside
+the scripts or on `PATH`, and install the WinUSB driver for the dongle with
+Zadig. The tools handle console colour automatically. `--selftest` and
+`test_pipeline.py` need no dongle, so run those first to confirm the Python side
+works before fighting driver issues.
+
 ## Site geometry
 
 Forward scatter wants a transmitter **800–2000 km** away, on a channel that is

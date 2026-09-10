@@ -36,8 +36,27 @@ import numpy as np
 
 import dsp
 
-# ANSI colours, disabled when not a tty.
-_TTY = sys.stdout.isatty()
+# ANSI colours, disabled when not a tty. On Windows the console needs virtual
+# terminal processing switched on explicitly or the escapes print as literal
+# garbage; if that cannot be enabled, fall back to plain text.
+def _enable_ansi():
+    if not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not k.GetConsoleMode(h, ctypes.byref(mode)):
+            return False
+        return bool(k.SetConsoleMode(h, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
+_TTY = _enable_ansi()
 def _c(code, s):
     return f"\033[{code}m{s}\033[0m" if _TTY else s
 def ok(s):    return _c("32", s)
@@ -459,11 +478,16 @@ contributes 75-300 K. So connecting a working antenna must raise the system
 noise floor substantially -- 8-16 dB for a typical LNA -- with no transmitter
 involved anywhere. The sky is the test signal.
 
-  LNA noise figure     expected floor rise
-       0.5 dB                16.4 dB
-       1.0 dB                13.2 dB
-       2.0 dB                 9.9 dB
-       3.0 dB                 7.9 dB
+  receiver noise figure    expected floor rise
+       0.5 dB  (good LNA)          16.4 dB
+       1.0 dB  (LNA)               13.2 dB
+       2.0 dB  (LNA)                9.9 dB
+       3.5 dB  (bare dongle)        5.8 dB
+       5.0 dB  (bare dongle)        4.1 dB
+       6.0 dB  (bare dongle)        3.3 dB
+
+  Pass --no-lna if there is no preamp in the chain, so the verdict is
+  judged against the bare-dongle range instead.
 
 WHERE TO DISCONNECT (this matters with a line amplifier):
   Unplug at the ANTENNA side of the LNA, leaving the amplifier powered and
@@ -497,7 +521,19 @@ Choose a QUIET frequency -- any real signal masks the effect.
     hr("VERDICT")
     print(f"  floor delta: {delta:+.2f} dB\n")
 
-    if delta >= 8:
+    # Thresholds depend on what is in front of the dongle. A bare RTL-SDR tuner
+    # is NF 3.5-6 dB against 0.5-2 dB for a decent LNA, so its own noise is much
+    # closer to the sky's and the floor lifts far less. Judging a healthy bare
+    # setup against the LNA numbers would call it broken.
+    if args.no_lna:
+        t_pass, t_warn, expect = 4.0, 2.0, "3-8 dB"
+        setup = "bare dongle, no preamp"
+    else:
+        t_pass, t_warn, expect = 8.0, 4.0, "8-16 dB"
+        setup = "with a low-noise preamp"
+    print(f"  setup: {setup}   expected range: {expect}\n")
+
+    if delta >= t_pass:
         nf = 10 * np.log10(1 / (10 ** (delta / 10) - 1) * 1500 / 290 + 1)
         print(f"  {PASS}  {delta:.1f} dB. You are external-noise-limited: the sky")
         print("        dominates your receiver's own noise, which is exactly the")
@@ -506,8 +542,15 @@ Choose a QUIET frequency -- any real signal masks the effect.
               "(assuming a 1500 K sky).")
         print("\n        The RF chain is working. An empty FM band at this site is")
         print("        a property of the location, not a fault.")
+        if delta > 18:
+            print(f"\n  {WARN}  {delta:.1f} dB is larger than galactic noise alone can")
+            print("        explain. Indoors, or near a laptop, monitor or switching")
+            print("        supply, you are probably measuring man-made interference")
+            print("        rather than sky. That still proves the antenna is")
+            print("        connected, but do not read it as sky sensitivity --")
+            print("        repeat outdoors, away from buildings, for a real number.")
         return 0
-    if delta >= 4:
+    if delta >= t_warn:
         print(f"  {WARN}  only {delta:.1f} dB. The antenna is contributing, but less")
         print("        than galactic noise alone should produce. Suspect:")
         print("          - feedline loss between antenna and LNA")
@@ -880,6 +923,9 @@ def main():
     p.add_argument("--minutes", type=float, default=10.0, help="--stability duration")
     p.add_argument("--period", type=float, default=1.0, help="--stability sample period s")
     p.add_argument("--save", type=str, help="save sweep to .npz")
+    p.add_argument("--no-lna", action="store_true",
+                   help="no preamp in the chain: use bare-dongle thresholds for "
+                        "--floor-test (expect 3-8 dB rather than 8-16 dB)")
     p.add_argument("--dir", type=str, default="./fm_observations",
                    help="directory of .npz chunks for --sidereal")
 
