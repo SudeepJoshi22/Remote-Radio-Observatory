@@ -122,6 +122,9 @@ cannot be imitated by any local interference.
 
 ## Bench test: bare antenna into the SDR, no preamp
 
+> A copy-pasteable checklist with fill-in-the-blank results lives in
+> [`RUN_SHEET.md`](RUN_SHEET.md).
+
 Worth doing before committing to the full setup. It establishes a **control**:
 every number measured here becomes the reference for judging whether the LNA and
 the Yagi actually improve things.
