@@ -791,32 +791,59 @@ excursions a meteor produces.
 
     g = np.array([r[0] for r in rows])
     snr = np.array([r[3] for r in rows])
-    pw = np.array([r[1] for r in rows])
     best = int(np.argmax(snr))
     peak_snr = snr[best]
+    spread = float(np.max(snr) - np.min(snr))
 
-    # The knee: lowest gain reaching within 1 dB of the best SNR.
-    knee_i = int(np.argmax(snr >= peak_snr - 1.0))
-    compressed = bool(snr[-1] < peak_snr - 2.0)
+    # This test only means something when a real signal is in the channel. On an
+    # empty band, "SNR" is just the channel bins over the guard bins with only
+    # receiver noise in both, so it tracks the tuner's own frequency response
+    # across gain settings and wanders by a couple of dB for no physical reason.
+    # Reporting that as compression, or recommending the gain where the wander
+    # happened to peak, is worse than saying nothing.
+    inconclusive = spread < 3.0
 
     hr("VERDICT")
+    print(f"  SNR range across all gains: {spread:.2f} dB\n")
+
+    if inconclusive:
+        print(f"  {WARN}  INCONCLUSIVE -- no signal in the channel.")
+        print(f"        SNR varies only {spread:.2f} dB across the whole gain range,")
+        print("        which means there is nothing here to measure against. What")
+        print("        little movement there is comes from the tuner's own")
+        print("        response shape, not from the front end behaving well or")
+        print("        badly. No compression verdict can be drawn, and the gain")
+        print("        that happened to peak is not meaningful.")
+        print("\n        To get a real answer, re-run tuned to a station you can")
+        print("        actually receive:")
+        print("          rf_check.py --gain-linearity -f <A REAL STATION>")
+        rec = float(g[-1])
+        print(f"\n  Meanwhile use {bold('--gain ' + format(rec, '.1f'))} (maximum).")
+        print("  With no preamp you need the sensitivity, and with nothing")
+        print("  amplifying ahead of the tuner there is little overload risk.")
+        print("  Confirm the choice with --floor-test: the gain giving the")
+        print("  largest antenna/terminated delta is the right one.")
+        return 0
+
+    knee_i = int(np.argmax(snr >= peak_snr - 1.0))
+    compressed = bool(snr[-1] < peak_snr - 2.0)
     print(f"  best SNR {peak_snr:.2f} dB at {g[best]:.1f} dB gain")
     print(f"  knee (within 1 dB of best): {g[knee_i]:.1f} dB\n")
 
-    rise = snr[min(knee_i, len(snr)-1)] - snr[0]
+    rise = snr[min(knee_i, len(snr) - 1)] - snr[0]
     if rise > 3:
         print(f"  {PASS}  SNR climbs {rise:.1f} dB with gain, so you ARE hearing")
-        print("        something external -- the dongle's own noise is not the")
+        print("        something external -- the tuner's own noise is not the")
         print("        limit. This is a positive RF chain result on its own.")
-    else:
-        print(f"  {WARN}  SNR barely moves with gain ({rise:+.1f} dB). Either the")
-        print("        band is truly empty and flat, or nothing external is")
-        print("        reaching the tuner. Cross-check with --floor-test.")
 
     if compressed:
-        print(f"\n  {FAIL}  SNR falls {peak_snr - snr[-1]:.1f} dB at maximum gain."
-              "\n        The front end is compressing. Use the knee gain, and")
-        print("        consider an FM band-pass filter ahead of the LNA.")
+        print(f"\n  {FAIL}  SNR falls {peak_snr - snr[-1]:.1f} dB at maximum gain.")
+        print("        The front end is compressing. Use the knee gain.")
+        if args.no_lna:
+            print("        With no preamp fitted, a strong nearby transmitter is")
+            print("        the likely cause; an FM band-pass filter would help.")
+        else:
+            print("        Consider an FM band-pass filter ahead of the LNA.")
     else:
         print(f"\n  {PASS}  no compression signature up to {g[-1]:.1f} dB")
 
