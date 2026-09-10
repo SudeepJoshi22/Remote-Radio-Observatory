@@ -165,13 +165,47 @@ from buildings, for a number that means something.
 feature ~180 kHz wide there. That is the one signal known to be receivable at
 this site, so seeing it end-to-end validates the whole chain.
 
-### On Windows
+### Drivers
 
-`pyrtlsdr` needs `librtlsdr.dll` and `libusb-1.0.dll` findable — put them beside
-the scripts or on `PATH`, and install the WinUSB driver for the dongle with
-Zadig. The tools handle console colour automatically. `--selftest` and
-`test_pipeline.py` need no dongle, so run those first to confirm the Python side
-works before fighting driver issues.
+The RTL-SDR needs no kernel driver in the usual sense — librtlsdr talks to it
+through libusb in userspace. What it does need is for nothing *else* to claim
+the device first.
+
+**Linux / Raspberry Pi OS.** `../install.sh` handles all of this. The critical
+part is that the kernel sees an RTL2832U and loads `dvb_usb_rtl28xxu`, treating
+it as a DVB-T television tuner. librtlsdr then cannot claim the USB interface
+and everything fails with:
+
+```
+usb_claim_interface error -6
+Failed to open rtlsdr device #0
+```
+
+This is the most common RTL-SDR problem on Linux. The installer writes
+`/etc/modprobe.d/blacklist-rtlsdr.conf`, unloads the module, installs udev rules
+for non-root access, and adds you to `plugdev`. **After a first install, unplug
+and replug the dongle** so it re-enumerates without the DVB driver attached.
+
+To check by hand:
+
+```bash
+lsmod | grep dvb                    # should print nothing
+sudo modprobe -r dvb_usb_rtl28xxu   # if it does
+rtl_test -t                         # should find and open the device
+```
+
+**Windows.** `install.sh` does not apply. You need:
+
+1. `librtlsdr.dll` and `libusb-1.0.dll` beside the scripts or on `PATH`, from an
+   rtl-sdr Windows release.
+2. **Zadig** to bind the **WinUSB** driver to the dongle — this is the
+   equivalent of the blacklist step. Without it Windows keeps its own DVB driver
+   attached and `pyrtlsdr` cannot open the device. In Zadig, tick
+   *Options → List All Devices*, select "Bulk-In, Interface (Interface 0)", and
+   install WinUSB.
+
+`--selftest` and `test_pipeline.py` need no dongle at all, so run those first to
+confirm the Python side works before fighting drivers.
 
 ## Site geometry
 
