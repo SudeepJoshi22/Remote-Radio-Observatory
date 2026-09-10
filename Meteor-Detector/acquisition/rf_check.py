@@ -368,6 +368,26 @@ def _group_signals(freqs, db, floor, threshold, df, min_width):
     return out
 
 
+def _save_sweep(path, freqs, db, gain, fs, nfft):
+    """Persist a sweep, creating parent directories, never raising.
+
+    Called before the results are analysed so a completed measurement cannot be
+    lost to a problem in the reporting code.
+    """
+    try:
+        path = os.path.abspath(os.path.expanduser(path))
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        np.savez_compressed(path, freq_hz=freqs, power_dbfs=db,
+                            gain_db=float(gain), sample_rate=fs, nfft=nfft)
+        print(f"saved: {path}")
+        return True
+    except Exception as e:
+        print(bad(f"could not save to {path}: {e}"))
+        return False
+
+
 def cmd_sweep(args):
     hr(f"SWEEP {args.start/1e6:.1f}-{args.stop/1e6:.1f} MHz "
        f"at fixed gain {args.gain} dB")
@@ -380,6 +400,18 @@ def cmd_sweep(args):
 
     freqs, db, lin = _sweep_band(args)
     fs, nfft = args.sample_rate, args.nfft
+
+    # Tiles overshoot the requested edges by up to half a tile, so clip. Without
+    # this the "quiet channel" suggestions can land above 108 MHz, outside the
+    # broadcast band entirely.
+    keep = (freqs >= args.start) & (freqs <= args.stop)
+    freqs, db, lin = freqs[keep], db[keep], lin[keep]
+
+    # Write the data out NOW, before anything is analysed. A sweep is a minute
+    # of real measurement; losing it to a missing directory or a bug further
+    # down is not acceptable.
+    if args.save:
+        _save_sweep(args.save, freqs, db, args.gain, fs, nfft)
 
     floor = float(np.percentile(db, 25))
     df = fs / nfft
@@ -448,10 +480,6 @@ def cmd_sweep(args):
     print("km away, along an azimuth where your horizon is open. A locally quiet")
     print("channel with no distant station on it will stay quiet forever.")
 
-    if args.save:
-        np.savez_compressed(args.save, freq_hz=freqs, power_dbfs=db,
-                            gain_db=args.gain, sample_rate=fs, nfft=nfft)
-        print(f"\nsaved: {args.save}")
     return rc
 
 
