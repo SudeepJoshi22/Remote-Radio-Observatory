@@ -66,6 +66,28 @@ python3 rf_check.py --floor-test --no-lna -g 49.6 -f 107.1e6 2>&1 | tee ~/rro-lo
 
 **Result: __________ dB**
 
+If it fails, the number still tells you *which* fault. The tool back-computes
+the delivered antenna temperature:
+
+| Implied T_ant | Meaning |
+|---|---|
+| ~1500 K | a good antenna seeing the sky |
+| ~290 K | connected but lossy — matched, just inefficient |
+| **< 250 K** | **impedance mismatch**, not a broken cable |
+| ~0 K | open circuit / broken feed |
+
+A bare monopole is the usual culprit for the mismatch case. Two things fix it:
+
+1. **Whip length** — a quarter wave at 100 MHz is **75 cm**. A short whip is a
+   severe mismatch at this frequency.
+2. **Ground plane** — a monopole is only half an antenna. It needs a
+   counterpoise: stand the magnetic base on a metal sheet, or add three or four
+   75 cm radials. Without one the coax shield acts as the counterpoise and
+   behaves badly.
+
+For scale, even VSWR 20:1 still yields about 2.5 dB, so a delta below that means
+the match is worse than 20:1.
+
 ## 2. Spur fingerprint
 
 Interactive, same connect/disconnect. Sweeps twice, so give it a minute.

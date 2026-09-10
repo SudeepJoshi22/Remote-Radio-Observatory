@@ -46,7 +46,13 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
+import warnings
+
 import numpy as np
+
+# pyrtlsdr 0.3.x imports pkg_resources, which setuptools deprecated. The pin is
+# deliberate (see requirements.txt); the warning is noise on every run.
+warnings.filterwarnings("ignore", message=r".*pkg_resources is deprecated.*")
 
 import dsp
 

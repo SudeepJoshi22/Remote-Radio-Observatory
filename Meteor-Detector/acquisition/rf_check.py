@@ -32,7 +32,13 @@ import os
 import sys
 import time
 
+import warnings
+
 import numpy as np
+
+# pyrtlsdr 0.3.x imports pkg_resources, which setuptools deprecated. The pin is
+# deliberate (see requirements.txt); the warning is noise on every run.
+warnings.filterwarnings("ignore", message=r".*pkg_resources is deprecated.*")
 
 import dsp
 
@@ -627,16 +633,46 @@ Choose a QUIET frequency -- any real signal masks the effect.
         print("          - you disconnected between LNA and dongle by mistake")
         print("        Try again at higher --gain and confirm the disconnect point.")
         return 0
-    print(f"  {FAIL}  {delta:.1f} dB. The antenna is contributing essentially")
-    print("        NOTHING. Everything recorded so far was your own receiver's")
-    print("        noise floor. No amount of DSP will find a meteor in it.")
-    print("\n        Check, in this order:")
-    print("          1. cable continuity end to end, and both connectors")
-    print("          2. LNA actually powered (measure the bias voltage)")
-    print("          3. the Yagi driven element is not shorted or open")
-    print("          4. you unplugged at the ANTENNA side of the LNA")
-    print("          5. swap in any other antenna, even a wire, and repeat --")
-    print("             a wire that beats the Yagi localises the fault fast")
+    # Back out what the antenna actually delivered. This separates a broken
+    # feed from a connected-but-badly-matched one, which need different fixes.
+    t_rx = 290 * (10 ** (3.5 / 10) - 1)          # assume a good tuner, ~359 K
+    t_ant = t_rx * (10 ** (delta / 10) - 1)
+    print(f"  {FAIL}  {delta:.1f} dB. The antenna is delivering far less noise")
+    print("        than the sky should provide.\n")
+    print(f"        Implied antenna temperature: ~{t_ant:.0f} K")
+    print("          ~1500 K  galactic background at 100 MHz (a good antenna)")
+    print("           ~290 K  ambient -- a lossy but properly matched antenna")
+    print("             ~0 K  open circuit or broken feed")
+
+    if t_ant < 250:
+        print("\n        Below ambient, which a passive antenna cannot reach by")
+        print("        being lossy alone. That points at a severe IMPEDANCE")
+        print("        MISMATCH rather than a broken cable: badly misterminated,")
+        print("        the delivered noise scales by (1 - |gamma|^2). For")
+        print("        reference, VSWR 20:1 still yields about 2.5 dB.")
+
+    if args.no_lna:
+        print("\n        With a bare monopole and no preamp, check in this order:")
+        print("          1. WHIP LENGTH. A quarter wave at 100 MHz is 75 cm.")
+        print("             A short whip is a huge mismatch here. Extend it fully.")
+        print("          2. GROUND PLANE. A monopole is only half an antenna; it")
+        print("             needs a counterpoise. Stand the magnetic base on a")
+        print("             metal sheet, or add three or four 75 cm radials.")
+        print("             Without one the coax shield becomes the counterpoise")
+        print("             and behaves badly.")
+        print("          3. Cable and both connectors, end to end.")
+        print("          4. Repeat OUTDOORS, away from the building.")
+        print("          5. Run --gain-linearity. If SNR still climbs with gain,")
+        print("             the antenna IS coupling, just weakly -- a matching")
+        print("             problem, not a dead feed.")
+    else:
+        print("\n        Check, in this order:")
+        print("          1. cable continuity end to end, and both connectors")
+        print("          2. LNA actually powered (measure the bias voltage)")
+        print("          3. the driven element is not shorted or open")
+        print("          4. you unplugged at the ANTENNA side of the LNA")
+        print("          5. swap in any other antenna, even a wire, and repeat --")
+        print("             a wire that beats the Yagi localises the fault fast")
     return 1
 
 
