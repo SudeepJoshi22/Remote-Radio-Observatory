@@ -17,7 +17,8 @@ Meteor-Detector/
     dsp.py                shared DSP primitives
     rf_check.py           Phase 0: prove the RF chain works
     fm_observe.py         Phase 1: the always-on recorder
-    plot_npz_utc.py       plots the recorder output vs UTC
+    plot_npz_utc.py       static plot of the recorder output vs UTC
+    viewer/               interactive web viewer: pan/zoom, threshold slider
     test_pipeline.py      end-to-end test, no hardware needed
     fm-observe.service    systemd unit for the Pi
   legacy/               first generation, superseded, kept for reference
@@ -76,12 +77,25 @@ python3 fm_observe.py --freq <CHANNEL> --gain <knee> --station SIRSI --save-iq
 python3 rf_check.py --sidereal --dir ~/fm_observations
 ```
 
-Then plot:
+Then plot. For a quick static look:
 
 ```bash
 python3 plot_npz_utc.py --dir ~/fm_observations --list
 python3 plot_npz_utc.py --dir ~/fm_observations
 ```
+
+For browsing a full day interactively and manually checking candidate pings
+before deciding on a threshold — pan, zoom, drag a threshold slider against
+the real noise floor:
+
+```bash
+python3 viewer/server.py --dir ~/fm_observations   # http://localhost:5002
+```
+
+No recordings yet? Try it on synthetic data first:
+`python3 viewer/demo_data.py --hours 24` then point the server at its output.
+This same server, run unmodified on the Pi, is how you'll view recordings from
+elsewhere on your network later — see `acquisition/viewer/README.md`.
 
 ## Design notes
 

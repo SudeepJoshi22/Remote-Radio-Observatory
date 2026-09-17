@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Remote Radio Observatory Viewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.32.0/plotly.min.js"
+        integrity="sha384-7TVmlZWH60iKX5Uk7lSvQhjtcgw2tkFjuwLcXoRSR4zXTyWFJRm9aPAguMh7CIra"
+        crossorigin="anonymous"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
+         background: #0e1116; color: #dde3ea; }
+  header { padding: 12px 18px; background: #161b22; border-bottom: 1px solid #2a323c;
+           display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; color: #9ecbff; }
+  .meta { font-size: 12px; color: #8b96a3; }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+           border-radius: 6px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
+  button:hover { background: #30363d; }
+  button.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  #chart { width: 100%; height: 74vh; }
+  .panel { padding: 10px 18px; display: flex; gap: 24px; align-items: center;
+           flex-wrap: wrap; border-top: 1px solid #2a323c; font-size: 12px; }
+  .panel label { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  input[type=range] { width: 220px; }
+  .stat { color: #8b96a3; }
+  .stat b { color: #dde3ea; }
+  #status { padding: 20px 18px; color: #8b96a3; font-size: 13px; }
+  #status.error { color: #f47067; }
+  a { color: #58a6ff; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Remote Radio Observatory</h1>
+  <span class="meta" id="metaLine">loading…</span>
+  <div class="controls">
+    <button data-range="1">last 1h</button>
+    <button data-range="6">last 6h</button>
+    <button data-range="24" class="active">last 24h</button>
+    <button data-range="168">last 7d</button>
+    <button data-range="all">all</button>
+    <button id="btnRefresh">refresh</button>
+  </div>
+</header>
+
+<div id="status">loading…</div>
+<div id="chart" style="display:none"></div>
+
+<div class="panel" id="panel" style="display:none">
+  <label>
+    candidate threshold (SNR dB)
+    <input type="range" id="threshold" min="-5" max="40" step="0.5" value="6">
+    <b id="threshVal">6.0</b> dB
+  </label>
+  <span class="stat">recorder triggers in view: <b id="statTrig">–</b></span>
+  <span class="stat">candidates at this threshold: <b id="statCand">–</b></span>
+  <span class="stat">points shown: <b id="statPoints">–</b></span>
+  <span class="stat" id="approxNote"></span>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentRangeHours = 24;
+let lastPayload = null;
+
+function fmtNs(ns) {
+  return new Date(ns / 1e6).toISOString().replace('T', ' ').replace('Z', ' UTC');
+}
+
+async function loadSummary() {
+  const r = await fetch('/api/summary');
+  const s = await r.json();
+  if (!s.count) {
+    $('status').className = 'error';
+    $('status').textContent =
+      'No .npz chunks found in ' + (s.dir || 'the configured directory') + '. ' +
+      'Run fm_observe.py to record, or try demo_data.py for a synthetic dataset ' +
+      '(python3 demo_data.py --hours 24 --out ~/demo_observations, then restart ' +
+      'server.py --dir ~/demo_observations).';
+    return null;
+  }
+  $('metaLine').textContent =
+    s.stations.join(', ') + '  ·  ' + s.count + ' chunk file(s)  ·  ' +
+    fmtNs(s.start_ns) + '  →  ' + fmtNs(s.end_ns) + '  ·  ' + s.dir;
+  return s;
+}
+
+async function loadRange(hours, summaryData) {
+  $('status').className = '';
+  $('status').textContent = 'loading…';
+  $('chart').style.display = 'none';
+  $('panel').style.display = 'none';
+
+  const endNs = summaryData.end_ns;
+  const startNs = hours === 'all' ? summaryData.start_ns
+                                   : endNs - hours * 3600 * 1e9;
+  const url = `/api/data?start_ns=${startNs}&end_ns=${endNs}&max_points=3000`;
+  const r = await fetch(url);
+  const d = await r.json();
+  if (d.error) {
+    $('status').className = 'error';
+    $('status').textContent = 'Error: ' + d.error;
+    return;
+  }
+  lastPayload = d;
+  render(d);
+}
+
+function render(d) {
+  const t = d.t_utc_ns.map(ns => new Date(ns / 1e6));
+  const meta = d.meta || {};
+
+  const powerBand = {
+    x: t.concat(t.slice().reverse()),
+    y: d.power_max.concat(d.power_min.slice().reverse()),
+    fill: 'toself', fillcolor: 'rgba(88,166,255,0.15)',
+    line: { color: 'transparent' }, showlegend: false, hoverinfo: 'skip',
+    xaxis: 'x', yaxis: 'y1', type: 'scatter'
+  };
+  const powerMax = {
+    x: t, y: d.power_max, name: 'power (max)', line: { color: '#58a6ff', width: 1 },
+    xaxis: 'x', yaxis: 'y1', type: 'scatter'
+  };
+  const noiseLine = {
+    x: t, y: d.noise_max, name: 'noise floor', line: { color: '#3fb950', width: 1 },
+    xaxis: 'x', yaxis: 'y1', type: 'scatter'
+  };
+  const trigT = t.filter((_, i) => d.trigger[i]);
+  const trigY = d.power_max.filter((_, i) => d.trigger[i]);
+  const trigMarks = {
+    x: trigT, y: trigY, name: 'recorder trigger', mode: 'markers',
+    marker: { color: '#f85149', size: 6 }, xaxis: 'x', yaxis: 'y1', type: 'scatter'
+  };
+  const snrLine = {
+    x: t, y: d.snr_max, name: 'SNR (max)', line: { color: '#d29922', width: 1 },
+    xaxis: 'x2', yaxis: 'y2', type: 'scatter'
+  };
+
+  const layout = {
+    grid: { rows: 2, columns: 1, pattern: 'independent', roworder: 'top to bottom' },
+    height: null,
+    margin: { t: 30, r: 20, l: 55, b: 40 },
+    paper_bgcolor: '#0e1116', plot_bgcolor: '#161b22',
+    font: { color: '#c9d1d9', size: 11 },
+    xaxis: { domain: [0, 1], anchor: 'y1', matches: 'x2', showticklabels: false,
+             gridcolor: '#21262d' },
+    xaxis2: { domain: [0, 1], anchor: 'y2', title: 'Time (UTC)', gridcolor: '#21262d' },
+    yaxis: { domain: [0.55, 1], title: 'dBFS', gridcolor: '#21262d' },
+    yaxis2: { domain: [0, 0.42], title: 'SNR (dB)', gridcolor: '#21262d' },
+    legend: { orientation: 'h', y: 1.08 },
+    shapes: [thresholdLine(parseFloat($('threshold').value))]
+  };
+
+  Plotly.newPlot('chart', [powerBand, powerMax, noiseLine, trigMarks, snrLine],
+                 layout, { responsive: true, displaylogo: false });
+
+  $('chart').style.display = 'block';
+  $('panel').style.display = 'flex';
+  $('status').textContent = '';
+
+  const stationTxt = meta.station ? `station ${meta.station}` : '';
+  const freqTxt = meta.center_freq_hz ? (meta.center_freq_hz / 1e6).toFixed(3) + ' MHz' : '';
+  $('approxNote').textContent = d.raw
+    ? `full resolution (${d.raw_points} samples, ${d.files_used} file(s)) · ${stationTxt} ${freqTxt}`
+    : `downsampled to ${d.t_utc_ns.length} buckets from ${d.raw_points.toLocaleString()} samples ` +
+      `(min/max per bucket — a bucket flagged "candidate" had SOME sample over ` +
+      `threshold, not every sample) · ${d.files_used} file(s) · ${stationTxt} ${freqTxt}`;
+
+  updateThresholdStats();
+}
+
+function thresholdLine(val) {
+  return { type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y2',
+           y0: val, y1: val, line: { color: '#f85149', width: 1, dash: 'dot' } };
+}
+
+function updateThresholdStats() {
+  if (!lastPayload) return;
+  const thresh = parseFloat($('threshold').value);
+  $('threshVal').textContent = thresh.toFixed(1);
+
+  const d = lastPayload;
+  let nTrig = 0, nCand = 0;
+  for (let i = 0; i < d.trigger.length; i++) {
+    if (d.trigger[i]) nTrig++;
+    if (d.snr_max[i] >= thresh) nCand++;
+  }
+  $('statTrig').textContent = nTrig;
+  $('statCand').textContent = nCand;
+  $('statPoints').textContent = d.t_utc_ns.length + (d.raw ? ' (raw)' : ' (buckets)');
+
+  Plotly.relayout('chart', { 'shapes[0]': thresholdLine(thresh) });
+
+  // Recolour candidate markers on the SNR trace without a full redraw.
+  const colors = d.snr_max.map(v => v >= thresh ? '#f85149' : '#d29922');
+  Plotly.restyle('chart', { 'marker.color': [colors] }, [4]);
+}
+
+$('threshold').addEventListener('input', updateThresholdStats);
+$('btnRefresh').addEventListener('click', () => init());
+
+document.querySelectorAll('[data-range]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    document.querySelectorAll('[data-range]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentRangeHours = btn.dataset.range === 'all' ? 'all' : parseFloat(btn.dataset.range);
+    const s = await loadSummary();
+    if (s) await loadRange(currentRangeHours, s);
+  });
+});
+
+async function init() {
+  const s = await loadSummary();
+  if (s) await loadRange(currentRangeHours, s);
+}
+init();
+</script>
+</body>
+</html>

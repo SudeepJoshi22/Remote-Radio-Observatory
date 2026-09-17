@@ -11,6 +11,8 @@ months recording the inside of a USB dongle.
 | `dsp.py` | Shared DSP primitives. Imported by **both** the diagnostic tool and the recorder, so what you validate on the bench is what gets written to disk. |
 | `rf_check.py` | Phase 0. Four checks that prove the RF chain works. |
 | `fm_observe.py` | Phase 1. The always-on recorder. |
+| `plot_npz_utc.py` | Static plot of one recording (or a glob of several) vs UTC. One command, one matplotlib window. |
+| `viewer/` | Interactive local web viewer: pan/zoom a full day, drag a threshold and see what it would have caught. See `viewer/README.md`. |
 | `test_pipeline.py` | End-to-end test against a synthetic sky. No hardware needed. |
 | `fm-observe.service` | systemd unit for unattended running on the Pi. |
 
@@ -97,7 +99,27 @@ channel that is dead locally. The check reports the quietest 200 kHz windows.
 python3 fm_observe.py --freq <CHANNEL> --gain <knee> --station SIRSI --save-iq
 ```
 
-### 7. Prove the antenna sees the sky (weeks, from data you collect anyway)
+### 7. Look at what was recorded
+
+For one file, or a quick glob:
+
+```bash
+python3 plot_npz_utc.py --dir ~/fm_observations
+```
+
+For browsing a full day interactively and manually checking candidate pings
+before deciding on a `--threshold-db`:
+
+```bash
+python3 viewer/server.py --dir ~/fm_observations
+```
+
+Open http://localhost:5002 — pan, zoom, and drag the threshold slider against
+the real noise floor. Try it on synthetic data first if nothing has been
+recorded yet: `python3 viewer/demo_data.py --hours 24` then point the server
+at its output. See `viewer/README.md`.
+
+### 8. Prove the antenna sees the sky (weeks, from data you collect anyway)
 
 ```bash
 python3 rf_check.py --sidereal --dir ~/fm_observations
