@@ -148,6 +148,123 @@ Skip if the band is empty; it needs a steady signal to mean anything.
 
 ---
 
+## First overnight acquisition — Yagi, headless Pi
+
+Antenna: Yagi (no prior floor-test data — validate before trusting an
+unattended run). Platform: Raspberry Pi, headless over SSH. Target: 97.9 MHz
+(candidate match: China Radio International relay via Colombo, Sri Lanka,
+1018 km, bearing 147°) — confirm by ear on SDR++ before committing the
+overnight run to it.
+
+Backup frequencies, same bearing (no re-aim needed): 91.7 / 94.3 / 96.1 /
+102.1 MHz (SLBC, Colombo). Independent second target: 101.9 MHz
+(Thiruvananthapuram, 718 km, bearing 161°).
+
+Aim the Yagi at bearing ≈150° (splits Colombo 147° / Thiruvananthapuram
+161°), elevation ≈8–14° (lower end for the ~1000 km Colombo distance, higher
+end for the closer 718 km Thiruvananthapuram path — see
+`acquisition/README.md`, "Site geometry", for the sourced 6°-at-1200km
+figure this is scaled from).
+
+### 0. Confirm the target by ear (laptop, SDR++, before moving the dongle)
+
+Tune 97.9 MHz, mode WFM. Listening for non-local (Chinese-language / CRI)
+content confirms the identification. Compare against 100.000 MHz as a
+reference for "this is EMI, not a station."
+
+**Confirmed station / content heard: ______________________**
+
+### 1. Pi environment check
+
+```bash
+ssh <pi-user>@<pi-host>
+cd ~/github/Remote-Radio-Observatory/Meteor-Detector/acquisition
+source ../venv/bin/activate
+python3 rf_check.py --selftest
+python3 test_pipeline.py
+python3 rf_check.py --list-devices
+```
+
+- [ ] SELF TEST PASSED
+- [ ] ALL CHECKS PASSED
+- [ ] dongle listed, tuner named
+
+### 2. Yagi floor test (new antenna — never tested before)
+
+```bash
+mkdir -p ~/rro-logs
+python3 rf_check.py --floor-test --no-lna -g 49.6 -f 97.9e6 2>&1 | tee ~/rro-logs/06-yagi-floor.txt
+```
+
+**Result: __________ dB**  (expect this to beat the monopole's 5.43 dB)
+
+### 3. Yagi spur test
+
+```bash
+python3 rf_check.py --spur-test -g 49.6 2>&1 | tee ~/rro-logs/07-yagi-spurs.txt
+```
+
+**Internal/EMI spurs found: __________________**
+
+### 4. Gain, against a real live signal this time
+
+```bash
+python3 rf_check.py --gain-linearity -f 97.9e6 2>&1 | tee ~/rro-logs/08-yagi-gain.txt
+```
+
+**Recommended gain: __________ dB**
+
+### 5. Start the overnight run (detached, survives SSH disconnect)
+
+`fm_observe.py` has no `--duration` flag — it is continuous by design,
+stopped by Ctrl+C or SIGTERM. Closing the SSH session sends SIGHUP and
+would kill a plain foreground process, so it runs under `nohup`:
+
+```bash
+mkdir -p ~/fm_observations
+nohup python3 fm_observe.py \
+    --freq 97.9e6 \
+    --gain <FROM STEP 4> \
+    --station SIRSI \
+    --threshold-db 6 \
+    --output-dir ~/fm_observations \
+    --save-iq \
+    > ~/rro-logs/overnight_$(date -u +%Y%m%dT%H%M%SZ).log 2>&1 &
+disown
+echo "started, pid $!"
+```
+
+`--save-iq` is on: Tier-2 triggered IQ capture costs a handful of MB per
+event and is the only way to later inspect a candidate ping's actual
+rise/decay shape rather than trusting the trigger blindly.
+
+**Start time (UTC): __________   PID: __________**
+
+### 6. Stop it in the morning and check the summary
+
+```bash
+ssh <pi-user>@<pi-host>
+pkill -SIGTERM -f fm_observe.py
+tail -30 ~/rro-logs/overnight_*.log
+```
+
+**Frames processed: __________   Triggers: __________   Dropped: ____%**
+
+A nonzero drop percentage means the Pi's USB/CPU couldn't keep up at
+1.024 MS/s — lower `--sample-rate` to 250e3 for the next run, but tonight's
+data is still valid for whatever it did process.
+
+### 7. View it
+
+```bash
+python3 viewer/server.py --dir ~/fm_observations --host 0.0.0.0
+# browse http://<pi-lan-ip>:5002 from the laptop
+```
+
+**Anything that looks like a candidate ping? (time, SNR, duration): ______________________**
+
+---
+
 ## Reference: known-good numbers from this rig
 
 Measured on the V4 at 107.1 MHz, 1.024 MS/s, gain 49.6 dB, 12 frames:

@@ -394,4 +394,7 @@ interference.
 One caveat on the physics: Indian FM transmitters typically run 10–20 kW ERP
 against the 100+ kW stations European observers use for this, so expect fewer
 pings than the tutorials promise. Aim the Yagi at the distant transmitter's
-azimuth with ~10–20° elevation — not at the horizon, and not at the zenith.
+azimuth. Elevation: sourced meteor-scatter literature gives ~6° radiation
+angle for a 1200 km path; for the shorter 720–1020 km paths in range from
+Sirsi, expect roughly **8–14°** — low, but not flat to the horizon, and not
+at the zenith. (This corrects an earlier, unsourced "10–20°" guess.)

@@ -142,7 +142,15 @@ Forward scatter wants a transmitter 800–2000 km away on a locally dead channel
 along an azimuth where the horizon is open. FM has been audible toward Mangalore
 (bearing 178°) and not elsewhere, which suggests the southern horizon is the
 open one — putting **Thiruvananthapuram (718 km, 161°)** and **Colombo
-(1018 km, 147°)** in range. Aim the Yagi at roughly 10–20° elevation, not at the
-horizon and not at the zenith.
+(1018 km, 147°)** in range. The leading candidate is **97.9 MHz**, matching
+China Radio International's relay via Colombo — see
+[`HANDOVER.md`](HANDOVER.md) and
+[`Meteor-Detector/acquisition/RUN_SHEET.md`](Meteor-Detector/acquisition/RUN_SHEET.md)
+for the full station list and confirmation steps.
+
+Aim the Yagi toward bearing ≈150° (splitting Colombo/Thiruvananthapuram).
+Elevation: sourced meteor-scatter literature gives ~6° radiation angle for a
+1200 km path — scaled to these shorter 720–1020 km paths, expect **~8–14°**,
+low but not flat to the horizon, and not at the zenith.
 
 Site parameters live in `Meteor-Detector/radar_config_sample`.

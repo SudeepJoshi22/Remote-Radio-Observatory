@@ -300,8 +300,13 @@ like.
    whether the candidate signal is real and gives a station ID.
 2. **Run `fm_observe.py` for real, for the first time.** Everything validated
    so far is `rf_check.py` diagnostics against live samples, not the actual
-   recorder. Start short (an hour), on 97.9 MHz once confirmed, with
-   `--save-iq`.
+   recorder. The plan is now an overnight run, on the Yagi, on a headless Pi
+   — full ordered command sequence in `acquisition/RUN_SHEET.md`'s "First
+   overnight acquisition" section (added after this handover was written).
+   Includes a real, sourced candidate-station list for the 750–1000 km band
+   (97.9 MHz / Colombo / China Radio International as the leading match,
+   with backups) — supersedes the "start short (an hour)" note this bullet
+   used to carry.
 3. **Point the new viewer at that real recording**
    (`viewer/server.py --dir ~/fm_observations`) — the first real test of the
    viewer against real data rather than synthetic.
