@@ -9,6 +9,10 @@ trail briefly reflects VHF and the station appears for a fraction of a second.
 Recording channel power continuously and looking for those excursions is the
 whole method.
 
+**Picking this project back up after a break?** [`HANDOVER.md`](HANDOVER.md)
+has the current status, the physics established, real bench-test numbers
+obtained so far, and the exact next steps — read that before this file.
+
 ## Layout
 
 ```
