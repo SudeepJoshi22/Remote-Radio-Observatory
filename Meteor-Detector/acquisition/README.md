@@ -120,8 +120,9 @@ python3 plot_npz_utc.py --dir ~/fm_observations --gui
 
 Enter a UTC date, choose the UTC starting hour and a 1-hour/6-hour/24-hour/
 7-day window, then click **plot selection**. Matplotlib's toolbar provides
-zoom and pan; the GUI loads the full selected range at the recorder's native
-frame rate. A 7-day selection can contain tens of millions of samples and may
+zoom and pan; you can also drag directly across any plot panel to zoom and use
+**reset view** to return to the selected window. The GUI loads the full
+selected range at the recorder's native frame rate. A 7-day selection can contain tens of millions of samples and may
 take substantial RAM/time, so start with a 1-hour window around a candidate.
 
 For browsing a full day interactively and manually checking candidate pings

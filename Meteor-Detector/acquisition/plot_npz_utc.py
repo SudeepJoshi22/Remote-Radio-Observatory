@@ -130,6 +130,7 @@ class LocalViewer:
             import tkinter as tk
             from tkinter import ttk
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+            from matplotlib.widgets import RectangleSelector
         except Exception as exc:
             raise RuntimeError(
                 "the local GUI needs Tk/Matplotlib GUI support; "
@@ -140,6 +141,7 @@ class LocalViewer:
         self.ttk = ttk
         self.FigureCanvasTkAgg = FigureCanvasTkAgg
         self.NavigationToolbar2Tk = NavigationToolbar2Tk
+        self.RectangleSelector = RectangleSelector
         self.directory = os.path.abspath(os.path.expanduser(directory))
         self.rows = index_recording_files(self.directory)
         self.bounds = recording_bounds(self.rows)
@@ -183,6 +185,10 @@ class LocalViewer:
                    command=lambda: self.shift_day(-1)).pack(side=tk.LEFT, padx=3)
         ttk.Button(controls, text="next day",
                    command=lambda: self.shift_day(1)).pack(side=tk.LEFT, padx=3)
+        ttk.Button(controls, text="reset view",
+                   command=self.reset_view).pack(side=tk.LEFT, padx=3)
+        ttk.Label(controls, text="drag across any plot to zoom").pack(
+            side=tk.LEFT, padx=10)
         self.status_var = tk.StringVar(value="loading…")
         ttk.Label(controls, textvariable=self.status_var).pack(side=tk.LEFT, padx=14)
 
@@ -233,6 +239,9 @@ class LocalViewer:
         self.draw(data, start_ns, end_ns)
 
     def draw(self, data, start_ns, end_ns):
+        for selector in getattr(self, "selectors", []):
+            selector.set_active(False)
+        self.selectors = []
         self.figure.clear()
         include_peak = self.show_peaks and "peak_dbfs" in data
         include_snr = self.show_snr and "snr_db" in data
@@ -292,11 +301,48 @@ class LocalViewer:
         axes[-1].xaxis.set_major_formatter(
             mdates.DateFormatter("%Y-%m-%d\n%H:%M:%S", tz=timezone.utc))
         axes[-1].xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=12))
+        self.axes = axes
+        self.full_xlim = _matplotlib_utc_days(np.asarray([start_ns, end_ns]))
+        self.selectors = [
+            self.RectangleSelector(
+                axis, self.zoom_selected, useblit=False, button=[1],
+                minspanx=1e-9, minspany=0, spancoords="data",
+                interactive=False,
+                props={"facecolor": "#58a6ff", "alpha": 0.15,
+                       "edgecolor": "#58a6ff"},
+            )
+            for axis in axes
+        ]
         self.figure.tight_layout(rect=(0, 0, 1, 0.96))
         self.canvas.draw_idle()
         self.status_var.set(
             f"{len(data['t_utc_ns']):,} raw samples · {len(data['files_used'])} chunk(s) · "
             f"{fmt_utc_ns(start_ns)} → {fmt_utc_ns(end_ns)}")
+
+    def zoom_selected(self, press, release):
+        """Zoom every linked panel to a dragged x-range."""
+        if press.xdata is None or release.xdata is None:
+            return
+        left, right = sorted((press.xdata, release.xdata))
+        if right - left <= 1e-9:
+            return
+        for axis in self.axes:
+            axis.set_xlim(left, right)
+        self.canvas.draw_idle()
+        start_ns = int((left - mdates.date2num(
+            datetime(1970, 1, 1, tzinfo=timezone.utc))) * 86400 * 1e9)
+        end_ns = int((right - mdates.date2num(
+            datetime(1970, 1, 1, tzinfo=timezone.utc))) * 86400 * 1e9)
+        self.status_var.set(f"zoomed view: {fmt_utc_ns(start_ns)} → "
+                           f"{fmt_utc_ns(end_ns)} · press reset view to undo")
+
+    def reset_view(self):
+        if not hasattr(self, "axes"):
+            return
+        for axis in self.axes:
+            axis.set_xlim(self.full_xlim)
+        self.canvas.draw_idle()
+        self.status_var.set("reset to selected UTC window")
 
     def run(self):
         self.root.mainloop()
