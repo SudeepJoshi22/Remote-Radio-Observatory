@@ -38,6 +38,9 @@ python3 server.py --dir ~/fm_observations
   real data to see where a threshold should sit before setting
   `--threshold-db` for the next recording run.
 - Preset buttons for last 1h / 6h / 24h / 7d / all.
+- A UTC focus selector: choose a calendar day, starting hour, and 1-hour,
+  6-hour, or 24-hour window. Focus windows use a denser response than the
+  multi-day overview, making it practical to inspect an older day's ping.
 - Plotly pan/zoom requests that selected UTC range again. A close view therefore
   returns the original 125 Hz samples instead of merely magnifying the day
   response.

@@ -29,6 +29,12 @@
   #status { padding: 20px 18px; color: #8b96a3; font-size: 13px; }
   #status.error { color: #f47067; }
   a { color: #58a6ff; }
+  .focusPanel { padding: 9px 18px; display: flex; gap: 12px; align-items: center;
+                flex-wrap: wrap; border-bottom: 1px solid #2a323c; font-size: 12px; }
+  .focusPanel label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+  .focusPanel input, .focusPanel select { background: #21262d; color: #c9d1d9;
+                border: 1px solid #30363d; border-radius: 4px; padding: 4px; font-size: 12px; }
+  .focusHint { color: #8b96a3; }
   #filesPanel { border-top: 1px solid #2a323c; padding: 12px 18px 24px; }
   #filesPanel h2 { font-size: 13px; font-weight: 600; color: #9ecbff; margin: 0 0 8px; }
   #fileList { max-height: 260px; overflow: auto; font-size: 12px; }
@@ -52,6 +58,22 @@
     <button id="btnRefresh">refresh</button>
   </div>
 </header>
+
+<div class="focusPanel">
+  <span class="focusHint">focus a UTC window:</span>
+  <label>day <input type="date" id="focusDay"></label>
+  <label>start hour
+    <select id="focusHour"></select>
+  </label>
+  <label>window
+    <select id="focusWindow">
+      <option value="1">1 hour</option>
+      <option value="6">6 hours</option>
+      <option value="24">24 hours</option>
+    </select>
+  </label>
+  <button id="btnFocus">plot selection</button>
+</div>
 
 <div id="status">loading…</div>
 <div id="chart" style="display:none"></div>
@@ -79,6 +101,7 @@ const $ = (id) => document.getElementById(id);
 let currentRangeHours = 24;
 let lastPayload = null;
 let summaryData = null;
+let focusInitialized = false;
 let rangeRequest = 0;
 let rangeTimer = null;
 
@@ -112,7 +135,7 @@ async function loadRange(hours, summaryData) {
   await loadData(startNs, endNs, true);
 }
 
-async function loadData(startNs, endNs, clearChart) {
+async function loadData(startNs, endNs, clearChart, maxPoints = 3000) {
   const requestId = ++rangeRequest;
   $('status').className = '';
   $('status').textContent = 'loading…';
@@ -120,7 +143,7 @@ async function loadData(startNs, endNs, clearChart) {
     $('chart').style.display = 'none';
     $('panel').style.display = 'none';
   }
-  const url = `/api/data?start_ns=${Math.round(startNs)}&end_ns=${Math.round(endNs)}&max_points=3000`;
+  const url = `/api/data?start_ns=${Math.round(startNs)}&end_ns=${Math.round(endNs)}&max_points=${maxPoints}`;
   const r = await fetch(url);
   const d = await r.json();
   if (requestId !== rangeRequest) return;
@@ -131,6 +154,47 @@ async function loadData(startNs, endNs, clearChart) {
   }
   lastPayload = d;
   render(d);
+}
+
+function datePart(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function configureFocus(s) {
+  const day = $('focusDay');
+  const hour = $('focusHour');
+  const last = new Date(s.end_ns / 1e6);
+  const earliest = new Date(s.start_ns / 1e6);
+  day.min = datePart(earliest);
+  day.max = datePart(last);
+  if (!focusInitialized) {
+    const oneHourEarlier = new Date(last.getTime() - 3600 * 1000);
+    day.value = datePart(oneHourEarlier);
+    hour.value = String(oneHourEarlier.getUTCHours()).padStart(2, '0');
+  }
+  if (!hour.options.length) {
+    for (let i = 0; i < 24; i++) {
+      const option = document.createElement('option');
+      option.value = String(i).padStart(2, '0');
+      option.textContent = `${option.value}:00 UTC`;
+      hour.append(option);
+    }
+    if (!focusInitialized) {
+      const oneHourEarlier = new Date(last.getTime() - 3600 * 1000);
+      hour.value = String(oneHourEarlier.getUTCHours()).padStart(2, '0');
+    }
+  }
+  focusInitialized = true;
+}
+
+async function plotFocusSelection() {
+  if (!summaryData || !$('focusDay').value) return;
+  const [year, month, day] = $('focusDay').value.split('-').map(Number);
+  const startMs = Date.UTC(year, month - 1, day, Number($('focusHour').value));
+  const hours = Number($('focusWindow').value);
+  const endMs = startMs + hours * 3600 * 1000;
+  document.querySelectorAll('[data-range]').forEach(b => b.classList.remove('active'));
+  await loadData(startMs * 1e6, endMs * 1e6, true, 10000);
 }
 
 function render(d) {
@@ -280,6 +344,7 @@ function updateThresholdStats() {
 
 $('threshold').addEventListener('input', updateThresholdStats);
 $('btnRefresh').addEventListener('click', () => init());
+$('btnFocus').addEventListener('click', plotFocusSelection);
 
 document.querySelectorAll('[data-range]').forEach(btn => {
   btn.addEventListener('click', async () => {
@@ -293,7 +358,10 @@ document.querySelectorAll('[data-range]').forEach(btn => {
 
 async function init() {
   const s = await loadSummary();
-  if (s) await loadRange(currentRangeHours, s);
+  if (s) {
+    configureFocus(s);
+    await loadRange(currentRangeHours, s);
+  }
   await loadFiles();
 }
 init();
