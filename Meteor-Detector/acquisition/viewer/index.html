@@ -77,6 +77,7 @@
   </label>
   <button id="btnFocus">plot selection</button>
   <a id="downloadRange" class="downloadButton" hidden download>download selected NPZ chunks</a>
+  <span class="focusHint" id="selectedRange"></span>
 </div>
 
 <div id="status">loading…</div>
@@ -158,10 +159,11 @@ async function loadData(startNs, endNs, clearChart, maxPoints = 3000) {
     return;
   }
   lastPayload = d;
+  $('selectedRange').textContent = `${fmtNs(startNs)} → ${fmtNs(endNs)} · UTC`;
   $('downloadRange').href = `/download-range?start_ns=${Math.round(startNs)}&end_ns=${Math.round(endNs)}`;
   $('downloadRange').textContent = `download selected NPZ chunks (${d.files_used})`;
   $('downloadRange').hidden = false;
-  render(d);
+  render(d, startNs, endNs);
 }
 
 function datePart(date) {
@@ -205,7 +207,7 @@ async function plotFocusSelection() {
   await loadData(startMs * 1e6, endMs * 1e6, true, 10000);
 }
 
-function render(d) {
+function render(d, startNs, endNs) {
   const t = d.t_utc_ns.map(ns => new Date(ns / 1e6));
   const meta = d.meta || {};
 
@@ -242,8 +244,11 @@ function render(d) {
     paper_bgcolor: '#0e1116', plot_bgcolor: '#161b22',
     font: { color: '#c9d1d9', size: 11 },
     xaxis: { domain: [0, 1], anchor: 'y1', matches: 'x2', showticklabels: false,
+             range: [new Date(startNs / 1e6), new Date(endNs / 1e6)],
              gridcolor: '#21262d' },
-    xaxis2: { domain: [0, 1], anchor: 'y2', title: 'Time (UTC)', gridcolor: '#21262d' },
+    xaxis2: { domain: [0, 1], anchor: 'y2', title: 'Time (UTC)',
+              range: [new Date(startNs / 1e6), new Date(endNs / 1e6)],
+              gridcolor: '#21262d' },
     yaxis: { domain: [0.55, 1], title: 'dBFS', gridcolor: '#21262d' },
     yaxis2: { domain: [0, 0.42], title: 'SNR (dB)', gridcolor: '#21262d' },
     legend: { orientation: 'h', y: 1.08 },
