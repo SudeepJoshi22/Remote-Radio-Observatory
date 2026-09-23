@@ -114,6 +114,20 @@ function fmtNs(ns) {
   return new Date(ns / 1e6).toISOString().replace('T', ' ').replace('Z', ' UTC');
 }
 
+// Plotly.js formats Date objects in the browser's local timezone. The
+// recorder timestamps and the focus controls are UTC, so pass a timezone-less
+// display string and parse relayout values as UTC. This keeps a Germany
+// browser from showing a selected 12:00 UTC window as 14:00 local time.
+function plotUtcTime(ns) {
+  return new Date(ns / 1e6).toISOString().replace('T', ' ').replace('Z', '');
+}
+
+function parsePlotUtcNs(value) {
+  if (typeof value === 'number') return value * 1e6;
+  const text = String(value).replace(' ', 'T');
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : text + 'Z') * 1e6;
+}
+
 async function loadSummary() {
   const r = await fetch('/api/summary');
   const s = await r.json();
@@ -208,7 +222,7 @@ async function plotFocusSelection() {
 }
 
 function render(d, startNs, endNs) {
-  const t = d.t_utc_ns.map(ns => new Date(ns / 1e6));
+  const t = d.t_utc_ns.map(plotUtcTime);
   const meta = d.meta || {};
 
   const powerBand = {
@@ -244,10 +258,10 @@ function render(d, startNs, endNs) {
     paper_bgcolor: '#0e1116', plot_bgcolor: '#161b22',
     font: { color: '#c9d1d9', size: 11 },
     xaxis: { domain: [0, 1], anchor: 'y1', matches: 'x2', showticklabels: false,
-             range: [new Date(startNs / 1e6), new Date(endNs / 1e6)],
+             range: [plotUtcTime(startNs), plotUtcTime(endNs)],
              gridcolor: '#21262d' },
     xaxis2: { domain: [0, 1], anchor: 'y2', title: 'Time (UTC)',
-              range: [new Date(startNs / 1e6), new Date(endNs / 1e6)],
+              range: [plotUtcTime(startNs), plotUtcTime(endNs)],
               gridcolor: '#21262d' },
     yaxis: { domain: [0.55, 1], title: 'dBFS', gridcolor: '#21262d' },
     yaxis2: { domain: [0, 0.42], title: 'SNR (dB)', gridcolor: '#21262d' },
@@ -266,8 +280,8 @@ function render(d, startNs, endNs) {
         const lo = ev['xaxis.range[0]'] || ev['xaxis2.range[0]'];
         const hi = ev['xaxis.range[1]'] || ev['xaxis2.range[1]'];
         if (!lo || !hi) return;
-        const start = Date.parse(lo) * 1e6;
-        const end = Date.parse(hi) * 1e6;
+        const start = parsePlotUtcNs(lo);
+        const end = parsePlotUtcNs(hi);
         if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
         clearTimeout(rangeTimer);
         rangeTimer = setTimeout(() => loadData(start, end, false), 180);
