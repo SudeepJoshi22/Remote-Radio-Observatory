@@ -1,0 +1,12 @@
+# Install as /etc/systemd/system/rro-npz-archive.service.
+
+[Unit]
+Description=Copy completed Remote Radio Observatory NPZ chunks to Google Drive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sudeep
+EnvironmentFile=-/etc/default/rro-npz-archive
+ExecStart=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/acquisition/archive_npz.sh

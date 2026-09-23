@@ -29,6 +29,13 @@
   #status { padding: 20px 18px; color: #8b96a3; font-size: 13px; }
   #status.error { color: #f47067; }
   a { color: #58a6ff; }
+  #filesPanel { border-top: 1px solid #2a323c; padding: 12px 18px 24px; }
+  #filesPanel h2 { font-size: 13px; font-weight: 600; color: #9ecbff; margin: 0 0 8px; }
+  #fileList { max-height: 260px; overflow: auto; font-size: 12px; }
+  .fileRow { display: grid; grid-template-columns: 170px 55px minmax(180px, 1fr) 70px; gap: 10px;
+             padding: 4px 0; border-bottom: 1px solid #1d232b; align-items: center; }
+  .fileRow .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fileNote { color: #8b96a3; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -61,10 +68,19 @@
   <span class="stat" id="approxNote"></span>
 </div>
 
+<section id="filesPanel">
+  <h2>completed recordings</h2>
+  <div class="fileNote" id="fileNote">loading file list…</div>
+  <div id="fileList"></div>
+</section>
+
 <script>
 const $ = (id) => document.getElementById(id);
 let currentRangeHours = 24;
 let lastPayload = null;
+let summaryData = null;
+let rangeRequest = 0;
+let rangeTimer = null;
 
 function fmtNs(ns) {
   return new Date(ns / 1e6).toISOString().replace('T', ' ').replace('Z', ' UTC');
@@ -85,21 +101,29 @@ async function loadSummary() {
   $('metaLine').textContent =
     s.stations.join(', ') + '  ·  ' + s.count + ' chunk file(s)  ·  ' +
     fmtNs(s.start_ns) + '  →  ' + fmtNs(s.end_ns) + '  ·  ' + s.dir;
+  summaryData = s;
   return s;
 }
 
 async function loadRange(hours, summaryData) {
-  $('status').className = '';
-  $('status').textContent = 'loading…';
-  $('chart').style.display = 'none';
-  $('panel').style.display = 'none';
-
   const endNs = summaryData.end_ns;
   const startNs = hours === 'all' ? summaryData.start_ns
                                    : endNs - hours * 3600 * 1e9;
-  const url = `/api/data?start_ns=${startNs}&end_ns=${endNs}&max_points=3000`;
+  await loadData(startNs, endNs, true);
+}
+
+async function loadData(startNs, endNs, clearChart) {
+  const requestId = ++rangeRequest;
+  $('status').className = '';
+  $('status').textContent = 'loading…';
+  if (clearChart) {
+    $('chart').style.display = 'none';
+    $('panel').style.display = 'none';
+  }
+  const url = `/api/data?start_ns=${Math.round(startNs)}&end_ns=${Math.round(endNs)}&max_points=3000`;
   const r = await fetch(url);
   const d = await r.json();
+  if (requestId !== rangeRequest) return;
   if (d.error) {
     $('status').className = 'error';
     $('status').textContent = 'Error: ' + d.error;
@@ -155,7 +179,25 @@ function render(d) {
   };
 
   Plotly.newPlot('chart', [powerBand, powerMax, noiseLine, trigMarks, snrLine],
-                 layout, { responsive: true, displaylogo: false });
+                 layout, { responsive: true, displaylogo: false }).then(() => {
+    const chart = $('chart');
+    if (!chart._rroRelayoutHandler) {
+      chart._rroRelayoutHandler = (ev) => {
+        // Plotly reports either xaxis or xaxis2 depending on which linked
+        // panel was dragged. Reloading here is what turns a visual zoom into
+        // an actual request for the original 125-Hz samples.
+        const lo = ev['xaxis.range[0]'] || ev['xaxis2.range[0]'];
+        const hi = ev['xaxis.range[1]'] || ev['xaxis2.range[1]'];
+        if (!lo || !hi) return;
+        const start = Date.parse(lo) * 1e6;
+        const end = Date.parse(hi) * 1e6;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+        clearTimeout(rangeTimer);
+        rangeTimer = setTimeout(() => loadData(start, end, false), 180);
+      };
+      chart.on('plotly_relayout', chart._rroRelayoutHandler);
+    }
+  });
 
   $('chart').style.display = 'block';
   $('panel').style.display = 'flex';
@@ -170,6 +212,43 @@ function render(d) {
       `threshold, not every sample) · ${d.files_used} file(s) · ${stationTxt} ${freqTxt}`;
 
   updateThresholdStats();
+}
+
+function fmtBytes(n) {
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KiB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+async function loadFiles() {
+  try {
+    const r = await fetch('/api/files?limit=400');
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    $('fileNote').textContent = `${d.total} indexed completed file(s)` +
+      (d.total > d.files.length ? ` · showing newest ${d.files.length}` : '');
+    const list = $('fileList');
+    list.textContent = '';
+    for (const f of d.files) {
+      const row = document.createElement('div');
+      row.className = 'fileRow';
+      const date = document.createElement('span');
+      date.textContent = fmtNs(f.start_ns);
+      const kind = document.createElement('span');
+      kind.textContent = f.type.toUpperCase();
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.title = f.name;
+      name.textContent = f.name;
+      const link = document.createElement('a');
+      link.href = f.download_url;
+      link.download = f.name;
+      link.textContent = `download (${fmtBytes(f.size)})`;
+      row.append(date, kind, name, link);
+      list.append(row);
+    }
+  } catch (e) {
+    $('fileNote').textContent = 'File list unavailable: ' + e.message;
+  }
 }
 
 function thresholdLine(val) {
@@ -215,6 +294,7 @@ document.querySelectorAll('[data-range]').forEach(btn => {
 async function init() {
   const s = await loadSummary();
   if (s) await loadRange(currentRangeHours, s);
+  await loadFiles();
 }
 init();
 </script>

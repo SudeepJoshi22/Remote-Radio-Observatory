@@ -98,8 +98,12 @@ python3 viewer/server.py --dir ~/fm_observations   # http://localhost:5002
 
 No recordings yet? Try it on synthetic data first:
 `python3 viewer/demo_data.py --hours 24` then point the server at its output.
-This same server, run unmodified on the Pi, is how you'll view recordings from
-elsewhere on your network later — see `acquisition/viewer/README.md`.
+On the Pi, install the production `viewer/rro-viewer.service` so Gunicorn keeps
+port 5002 available alongside the recorder. The same LAN address remains
+available, and Tailscale Serve can publish it as a private HTTPS address to the
+normal Windows browser. Install Tailscale on Windows and the Pi only; keep it
+out of WSL2. See `acquisition/viewer/README.md` for the Drive archive and WSL
+download workflow.
 
 ## Design notes
 

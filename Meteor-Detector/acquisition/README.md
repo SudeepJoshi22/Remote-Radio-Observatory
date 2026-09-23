@@ -14,7 +14,10 @@ months recording the inside of a USB dongle.
 | `plot_npz_utc.py` | Static plot of one recording (or a glob of several) vs UTC. One command, one matplotlib window. |
 | `viewer/` | Interactive local web viewer: pan/zoom a full day, drag a threshold and see what it would have caught. See `viewer/README.md`. |
 | `test_pipeline.py` | End-to-end test against a synthetic sky. No hardware needed. |
+| `test_chunk_writer.py` | Checks that Tier-1 chunks publish atomically and leave no temporary file. |
 | `fm-observe.service` | systemd unit for unattended running on the Pi. |
+| `rro-viewer.service` | Gunicorn viewer service, LAN port 5002; can be published privately with Tailscale Serve. |
+| `archive_npz.sh` + `rro-npz-archive.*` | Hourly, non-destructive Google Drive copy and 30-day remote retention. |
 
 ## Order of operations
 
@@ -117,7 +120,43 @@ python3 viewer/server.py --dir ~/fm_observations
 Open http://localhost:5002 — pan, zoom, and drag the threshold slider against
 the real noise floor. Try it on synthetic data first if nothing has been
 recorded yet: `python3 viewer/demo_data.py --hours 24` then point the server
-at its output. See `viewer/README.md`.
+at its output. See `viewer/README.md` for the production Pi service.
+
+### Pi archive and WSL workflow
+
+The recorder writes each chunk as `*.npz.tmp`, fsyncs it, and atomically
+renames it to the indexed `*.npz` name. The hourly archive job therefore copies
+completed chunks only. It never deletes Pi recordings. Install the timer and
+copy `rro-npz-archive.env.example` to `/etc/default/rro-npz-archive`:
+
+```bash
+sudo cp rro-npz-archive.service rro-npz-archive.timer /etc/systemd/system/
+sudo cp rro-npz-archive.env.example /etc/default/rro-npz-archive
+sudo systemctl daemon-reload
+sudo systemctl enable --now rro-npz-archive.timer
+```
+
+Create a dedicated free Google account/folder and configure rclone with a
+personal OAuth client. The shared rclone Drive client is being retired, so use
+the client-ID/client-secret fields in `rclone config` rather than accepting the
+shared default. The remote configured in the example is `gdrive-rro`; verify it
+with `rclone lsd gdrive-rro:` before enabling the timer. Each run logs upload
+errors, Drive free quota, and deletes only remote NPZ objects older than 720
+hours. `rclone copy` is intentionally used instead of `move`.
+
+When the Pi is offline, download selected NPZ chunks from Drive into WSL and
+run the existing plotting/analysis commands against that local directory. For
+example, after configuring the same personal rclone OAuth client in WSL:
+
+```bash
+mkdir -p ~/rro_archive
+rclone copy gdrive-rro:remote-radio-observatory/npz ~/rro_archive \
+  --include 'SIRSI_20260923_*.npz'
+python3 plot_npz_utc.py --dir ~/rro_archive
+```
+
+The browser's file list is still convenient for one-off downloads while the
+Pi is online; IQ event files remain on the Pi and are served on demand.
 
 ### 8. Prove the antenna sees the sky (weeks, from data you collect anyway)
 

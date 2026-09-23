@@ -82,6 +82,42 @@ def main():
         r = client.get("/api/data?start_ns=abc&end_ns=123")
         check("malformed request is rejected, not a 500",
               r.status_code == 400, f"{r.status_code}")
+        r = client.get(f"/api/data?start_ns={s['start_ns']}&end_ns={s['end_ns']}&max_points=nope")
+        check("malformed max_points is rejected", r.status_code == 400,
+              str(r.status_code))
+
+        # The recorder's atomic publication convention: a .npz.tmp is not an
+        # indexed recording and cannot leak through the download endpoint.
+        temp_name = "TEST_20990101_000000_chunk9999.npz.tmp"
+        with open(os.path.join(outdir, temp_name), "wb") as f:
+            f.write(b"unfinished")
+        r = client.get("/api/files")
+        listed = [f["name"] for f in r.get_json()["files"]]
+        check("temporary chunk is absent from file list", temp_name not in listed)
+        r = client.get("/download/" + temp_name)
+        check("temporary chunk cannot be downloaded", r.status_code == 404,
+              str(r.status_code))
+
+        complete_name = listed[0]
+        r = client.get("/download/" + complete_name)
+        check("indexed NPZ downloads", r.status_code == 200, str(r.status_code))
+        check("download has NPZ content", r.data.startswith(b"PK"))
+
+        event_dir = os.path.join(outdir, "events")
+        os.makedirs(event_dir)
+        event_base = "event_20990101_000000_123"
+        with open(os.path.join(event_dir, event_base + ".iq"), "wb") as f:
+            f.write(b"IQ")
+        with open(os.path.join(event_dir, event_base + ".json"), "wb") as f:
+            f.write(b"{}")
+        r = client.get("/api/files")
+        event_names = {f["name"] for f in r.get_json()["files"]}
+        check("matching IQ event is listed", event_base + ".iq" in event_names)
+        r = client.get("/download/" + event_base + ".iq")
+        check("indexed IQ event downloads", r.status_code == 200 and r.data == b"IQ")
+
+        r = client.get("/download/../../etc/passwd")
+        check("path traversal is rejected", r.status_code == 404, str(r.status_code))
 
     finally:
         shutil.rmtree(outdir, ignore_errors=True)

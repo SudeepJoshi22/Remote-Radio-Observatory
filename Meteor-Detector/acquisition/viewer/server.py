@@ -33,10 +33,49 @@ from flask import Flask, jsonify, request, send_from_directory
 HERE = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=None)
 
-# Set by main() from --dir. Read-only after startup.
-DATA_DIR = None
+# Set by main() or wsgi.py from --dir/RRO_DATA_DIR. Read-only after startup.
+# Having a useful import-time default is important when Gunicorn imports the
+# WSGI module instead of calling main().
+DATA_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get("RRO_DATA_DIR", "./fm_observations")))
 
 _NAME_RE = re.compile(r"^(?P<station>.+)_(?P<stamp>\d{8}_\d{6})_chunk\d+\.npz$")
+_EVENT_RE = re.compile(r"^event_(?P<stamp>\d{8}_\d{6}_\d{3})\.(?P<kind>iq|json)$")
+
+
+def _parse_stamp(value, fmt):
+    try:
+        return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _event_index():
+    """Return only complete, known event sidecars in the data directory."""
+    rows = {}
+    event_dirs = (DATA_DIR, os.path.join(DATA_DIR, "events"))
+    paths = []
+    for directory in event_dirs:
+        paths.extend(glob.glob(os.path.join(directory, "event_*.iq")))
+        paths.extend(glob.glob(os.path.join(directory, "event_*.json")))
+    for path in paths:
+        name = os.path.basename(path)
+        m = _EVENT_RE.match(name)
+        if not m or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        stamp = _parse_stamp(m["stamp"], "%Y%m%d_%H%M%S_%f")
+        if stamp is None:
+            continue
+        base = name.rsplit(".", 1)[0]
+        row = rows.setdefault(base, {"base": base, "start_ns": int(stamp.timestamp() * 1e9),
+                                     "date": stamp.isoformat(), "iq": None, "json": None})
+        row[m["kind"]] = {
+            "name": name,
+            "path": path,
+            "size": os.path.getsize(path),
+            "download_url": "/download/" + name,
+        }
+    return sorted(rows.values(), key=lambda r: r["start_ns"], reverse=True)
 
 
 def _index():
@@ -51,7 +90,7 @@ def _index():
     for path in sorted(glob.glob(os.path.join(DATA_DIR, "*.npz"))):
         name = os.path.basename(path)
         m = _NAME_RE.match(name)
-        if not m:
+        if not m or not os.path.isfile(path) or os.path.islink(path):
             continue
         try:
             stamp = datetime.strptime(m["stamp"], "%Y%m%d_%H%M%S")
@@ -61,6 +100,22 @@ def _index():
         rows.append({"path": path, "station": m["station"],
                      "start_ns": int(stamp.timestamp() * 1e9)})
     return rows
+
+
+def _public_chunk(row):
+    """Convert an internal chunk row into the stable API/file-list shape."""
+    path = row["path"]
+    name = os.path.basename(path)
+    return {
+        "name": name,
+        "type": "npz",
+        "station": row["station"],
+        "start_ns": row["start_ns"],
+        "date": datetime.fromtimestamp(row["start_ns"] / 1e9,
+                                        tz=timezone.utc).isoformat(),
+        "size": os.path.getsize(path),
+        "download_url": "/download/" + name,
+    }
 
 
 def _load_range(rows, start_ns, end_ns):
@@ -91,22 +146,25 @@ def _load_range(rows, start_ns, end_ns):
         if nxt is not None and nxt <= start_ns:
             continue
         try:
+            # Closing the NpzFile matters on long-running Gunicorn workers:
+            # otherwise every zoom can leave a descriptor open until GC.
             d = np.load(r["path"])
+            with d:
+                t = d["t_utc_ns"]
+                if len(t) == 0 or t[-1] < start_ns or t[0] > end_ns:
+                    continue
+                keep = (t >= start_ns) & (t <= end_ns)
+                if not np.any(keep):
+                    continue
+                for f in fields:
+                    parts[f].append(d[f][keep])
+                if meta is None:
+                    meta = {k: d[k][0] for k in
+                            ("station", "center_freq_hz", "threshold_db",
+                             "frame_rate_hz", "gain_db") if k in d.files}
+                touched += 1
         except Exception:
             continue
-        t = d["t_utc_ns"]
-        if len(t) == 0 or t[-1] < start_ns or t[0] > end_ns:
-            continue
-        keep = (t >= start_ns) & (t <= end_ns)
-        if not np.any(keep):
-            continue
-        for f in fields:
-            parts[f].append(d[f][keep])
-        if meta is None:
-            meta = {k: d[k][0] for k in
-                    ("station", "center_freq_hz", "threshold_db",
-                     "frame_rate_hz", "gain_db") if k in d.files}
-        touched += 1
 
     if not parts["t_utc_ns"]:
         return None, meta, touched
@@ -182,11 +240,63 @@ def summary():
     rows.sort(key=lambda r: r["start_ns"])
     stations = sorted(set(r["station"] for r in rows))
     # Peek the last chunk for its true end time (start + frame count / rate).
-    last = np.load(rows[-1]["path"])
-    end_ns = int(last["t_utc_ns"][-1]) if len(last["t_utc_ns"]) else rows[-1]["start_ns"]
+    try:
+        with np.load(rows[-1]["path"]) as last:
+            end_ns = (int(last["t_utc_ns"][-1])
+                      if len(last["t_utc_ns"]) else rows[-1]["start_ns"])
+    except Exception:
+        end_ns = rows[-1]["start_ns"]
     return jsonify({"count": len(rows), "start_ns": rows[0]["start_ns"],
                     "end_ns": end_ns, "stations": stations,
                     "dir": DATA_DIR})
+
+
+@app.route("/api/files")
+def files():
+    """List downloadable completed chunks and their matching IQ events.
+
+    The allowlist is built from the same strict filename indexes used by the
+    download route. Temporary recorder files and arbitrary paths never appear.
+    """
+    try:
+        limit = max(1, min(int(request.args.get("limit", 500)), 5000))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "limit and offset must be integers"}), 400
+
+    chunks = [_public_chunk(r) for r in
+              sorted(_index(), key=lambda r: r["start_ns"], reverse=True)]
+    events = _event_index()
+    all_files = chunks + [
+        {"name": item[kind]["name"], "type": kind,
+         "start_ns": item["start_ns"], "date": item["date"],
+         "size": item[kind]["size"],
+         "download_url": item[kind]["download_url"],
+         "event_base": item["base"]}
+        for item in events for kind in ("iq", "json") if item[kind]
+    ]
+    all_files.sort(key=lambda row: row["start_ns"], reverse=True)
+    return jsonify({"files": all_files[offset:offset + limit],
+                    "total": len(all_files), "offset": offset,
+                    "limit": limit})
+
+
+@app.route("/download/<path:filename>")
+def download(filename):
+    """Download a file only when its exact basename is in a recording index."""
+    if filename != os.path.basename(filename):
+        return jsonify({"error": "only indexed recording filenames are allowed"}), 404
+
+    allowed = {os.path.basename(row["path"]) for row in _index()}
+    event_paths = {item[kind]["name"]: item[kind]["path"]
+                   for item in _event_index()
+                   for kind in ("iq", "json") if item[kind]}
+    allowed.update(event_paths)
+    if filename not in allowed:
+        return jsonify({"error": "recording is not indexed or is incomplete"}), 404
+    directory = os.path.dirname(event_paths[filename]) if filename in event_paths else DATA_DIR
+    return send_from_directory(directory, filename, as_attachment=True,
+                               conditional=True)
 
 
 @app.route("/api/data")
@@ -196,7 +306,10 @@ def data():
         end_ns = int(request.args["end_ns"])
     except (KeyError, ValueError):
         return jsonify({"error": "start_ns and end_ns (int, UTC ns) required"}), 400
-    max_points = int(request.args.get("max_points", 2000))
+    try:
+        max_points = int(request.args.get("max_points", 2000))
+    except ValueError:
+        return jsonify({"error": "max_points must be an integer"}), 400
     max_points = max(50, min(max_points, 20000))
 
     rows = _index()

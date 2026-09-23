@@ -156,16 +156,32 @@ class ChunkWriter:
         name = (f"{self.station}_{stamp.strftime('%Y%m%d_%H%M%S')}"
                 f"_chunk{self.index:04d}.npz")
         path = os.path.join(self.outdir, name)
-        np.savez_compressed(
-            path,
-            t_utc_ns=np.asarray(self.t, dtype=np.int64),
-            power_dbfs=np.asarray(self.power, dtype=np.float32),
-            noise_dbfs=np.asarray(self.noise, dtype=np.float32),
-            peak_dbfs=np.asarray(self.peak, dtype=np.float32),
-            snr_db=np.asarray(self.snr, dtype=np.float32),
-            trigger=np.asarray(self.trig, dtype=bool),
-            **{k: np.asarray([v]) for k, v in self.meta.items()},
-        )
+        # The archive job and viewer deliberately only recognize the final
+        # .npz name. Write and fsync a sibling temporary file first, then
+        # publish it with one same-filesystem rename. A power loss or an
+        # hourly rclone run can therefore never observe a half-written NPZ.
+        temp_path = path + ".tmp"
+        try:
+            with open(temp_path, "wb") as f:
+                np.savez_compressed(
+                    f,
+                    t_utc_ns=np.asarray(self.t, dtype=np.int64),
+                    power_dbfs=np.asarray(self.power, dtype=np.float32),
+                    noise_dbfs=np.asarray(self.noise, dtype=np.float32),
+                    peak_dbfs=np.asarray(self.peak, dtype=np.float32),
+                    snr_db=np.asarray(self.snr, dtype=np.float32),
+                    trigger=np.asarray(self.trig, dtype=bool),
+                    **{k: np.asarray([v]) for k, v in self.meta.items()},
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            raise
         n = len(self.t)
         self.index += 1
         self._reset()
@@ -255,16 +271,39 @@ class IQRing:
                                        tz=timezone.utc)
         base = f"event_{stamp.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
         iq_path = os.path.join(self.outdir, base + ".iq")
-        with open(iq_path, "wb") as f:
-            for b in self._blocks:
-                f.write(b)
+        iq_tmp = iq_path + ".tmp"
+        try:
+            with open(iq_tmp, "wb") as f:
+                for b in self._blocks:
+                    f.write(b)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(iq_tmp, iq_path)
+        except Exception:
+            try:
+                os.unlink(iq_tmp)
+            except FileNotFoundError:
+                pass
+            raise
         meta = dict(self._meta)
         meta.pop("ended", None)
         meta["t_start_utc"] = stamp.isoformat()
         meta["bytes"] = len(self._blocks) * self.block_bytes
         meta["format"] = "uint8 interleaved I,Q (rtl_sdr native)"
-        with open(os.path.join(self.outdir, base + ".json"), "w") as f:
-            json.dump(meta, f, indent=2)
+        meta_path = os.path.join(self.outdir, base + ".json")
+        meta_tmp = meta_path + ".tmp"
+        try:
+            with open(meta_tmp, "w") as f:
+                json.dump(meta, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(meta_tmp, meta_path)
+        except Exception:
+            try:
+                os.unlink(meta_tmp)
+            except FileNotFoundError:
+                pass
+            raise
         log(f"  IQ event saved: {base}.iq "
             f"({meta['bytes']/1e6:.1f} MB, peak SNR {meta['peak_snr']:.1f} dB, "
             f"{meta['duration_s']*1e3:.0f} ms)")

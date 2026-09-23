@@ -1,6 +1,6 @@
 # Viewer
 
-Stage 1 of the plan: an interactive local web page for browsing `fm_observe.py`
+An interactive web page for browsing `fm_observe.py`
 output, so a day's data can be scrolled through and candidate meteor pings
 eyeballed *before* committing to a `--threshold-db` value in the recorder.
 
@@ -38,6 +38,12 @@ python3 server.py --dir ~/fm_observations
   real data to see where a threshold should sit before setting
   `--threshold-db` for the next recording run.
 - Preset buttons for last 1h / 6h / 24h / 7d / all.
+- Plotly pan/zoom requests that selected UTC range again. A close view therefore
+  returns the original 125 Hz samples instead of merely magnifying the day
+  response.
+- A dated list of completed NPZ chunks and IQ event sidecars, with one-click
+  downloads. Downloads are limited to filenames currently present in the
+  recorder's strict indexes; `.npz.tmp` files are never listed or served.
 
 ## Why min/max buckets, not a plain average
 
@@ -60,23 +66,41 @@ looking closely at a candidate.
 | File | What |
 |---|---|
 | `server.py` | Flask app: indexes chunk files by filename, loads the ones overlapping a requested time range, downsamples, serves JSON |
-| `index.html` | The page: Plotly.js chart, range buttons, threshold slider |
+| `index.html` | The page: Plotly.js chart, server-backed zoom, file list, downloads, range buttons, threshold slider |
+| `wsgi.py` | Gunicorn entry point; reads `RRO_DATA_DIR` |
+| `rro-viewer.service` | Production Pi service on port 5002 |
 | `demo_data.py` | Synthetic dataset generator, same schema as `fm_observe.py` |
 | `test_viewer.py` | Smoke test: generates data, hits the Flask app directly, checks bucketing preserves injected pings |
 
-## Stages 2 and 3
+## Pi service and private remote viewing
 
-This is a plain Flask dev server, so:
+For a Pi that records continuously, install the dependencies from the repository
+requirements and install `rro-viewer.service` as documented in that unit. It
+runs Gunicorn with one worker and four threads on the same port as the old
+viewer:
 
-- **Stage 2 (Pi, same network):** run the identical command on the Pi --
-  `python3 server.py --dir ~/fm_observations --host 0.0.0.0` -- and browse to
-  `http://<pi-lan-ip>:5002` from any device on the same network. No code
-  change.
-- **Stage 3 (from anywhere):** put a tunnel or reverse proxy in front of the
-  same server (Cloudflare Tunnel, Tailscale, etc.) rather than rewriting it.
-  Not yet decided which -- revisit once real recordings are flowing.
+```bash
+sudo cp rro-viewer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rro-viewer
+```
 
-Flask's built-in server prints a warning that it is a development server, not
-for production. For a single viewer on your own network that is fine; if this
-ever needs to hold up under real concurrent load, put it behind `gunicorn` or
-similar first.
+It binds `0.0.0.0:5002`, so the LAN address remains
+`http://<pi-lan-ip>:5002`. Install Tailscale on the Pi and on the Windows host,
+but do not run a second Tailscale daemon inside WSL2. On the Pi, publish only
+the local viewer through Tailscale Serve:
+
+```bash
+sudo tailscale up
+sudo tailscale serve --bg http://127.0.0.1:5002
+tailscale serve status
+```
+
+Open the private HTTPS URL shown by `tailscale serve status` in the normal
+Windows browser. Tailscale ACLs/tailnet membership control who can reach it;
+the viewer itself has no public listener. Raspberry Pi Connect remains useful
+for acquisition commands.
+
+Tailscale's Windows/WSL2 integration warns against installing Tailscale again
+inside WSL2 because the two network stacks can conflict. Start WSL only when
+you want local analysis or a manual archive download.

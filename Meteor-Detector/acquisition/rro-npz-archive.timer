@@ -1,0 +1,13 @@
+# Install as /etc/systemd/system/rro-npz-archive.timer.
+
+[Unit]
+Description=Hourly Remote Radio Observatory NPZ archive upload
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,32 @@
+# Production viewer. Install as /etc/systemd/system/rro-viewer.service.
+# The recorder can keep writing while this service reads completed chunks.
+#
+#   sudo cp rro-viewer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now rro-viewer
+#   journalctl -u rro-viewer -f
+
+[Unit]
+Description=Remote Radio Observatory private viewer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sudeep
+WorkingDirectory=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/acquisition/viewer
+Environment=PYTHONUNBUFFERED=1
+Environment=RRO_DATA_DIR=/home/sudeep/fm_observations
+ExecStart=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/venv/bin/gunicorn \
+    --workers 1 \
+    --threads 4 \
+    --bind 0.0.0.0:5002 \
+    --access-logfile - \
+    --error-logfile - \
+    wsgi:app
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -22,5 +22,6 @@ pyrtlsdr>=0.3.0,<0.4
 # pyrtlsdr 0.3.0 imports pkg_resources, which setuptools 81 removed.
 setuptools<81
 
-# Web viewer in legacy/sdr-viewer/
+# Web viewer and production WSGI server.
 flask>=3.0.0
+gunicorn>=23.0.0
