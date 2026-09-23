@@ -47,6 +47,9 @@ python3 server.py --dir ~/fm_observations
 - A dated list of completed NPZ chunks and IQ event sidecars, with one-click
   downloads. Downloads are limited to filenames currently present in the
   recorder's strict indexes; `.npz.tmp` files are never listed or served.
+- A bulk download button for the currently plotted time range. It creates one
+  ZIP containing every completed NPZ chunk overlapping that range, so there is
+  no need to identify chunk filenames manually.
 
 ## Why min/max buckets, not a plain average
 

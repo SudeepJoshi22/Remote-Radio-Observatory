@@ -35,6 +35,9 @@
   .focusPanel input, .focusPanel select { background: #21262d; color: #c9d1d9;
                 border: 1px solid #30363d; border-radius: 4px; padding: 4px; font-size: 12px; }
   .focusHint { color: #8b96a3; }
+  .downloadButton { background: #21262d; border: 1px solid #30363d; border-radius: 6px;
+                    padding: 5px 11px; text-decoration: none; font-size: 12px; }
+  .downloadButton:hover { background: #30363d; }
   #filesPanel { border-top: 1px solid #2a323c; padding: 12px 18px 24px; }
   #filesPanel h2 { font-size: 13px; font-weight: 600; color: #9ecbff; margin: 0 0 8px; }
   #fileList { max-height: 260px; overflow: auto; font-size: 12px; }
@@ -73,6 +76,7 @@
     </select>
   </label>
   <button id="btnFocus">plot selection</button>
+  <a id="downloadRange" class="downloadButton" hidden download>download selected NPZ chunks</a>
 </div>
 
 <div id="status">loading…</div>
@@ -148,11 +152,15 @@ async function loadData(startNs, endNs, clearChart, maxPoints = 3000) {
   const d = await r.json();
   if (requestId !== rangeRequest) return;
   if (d.error) {
+    $('downloadRange').hidden = true;
     $('status').className = 'error';
     $('status').textContent = 'Error: ' + d.error;
     return;
   }
   lastPayload = d;
+  $('downloadRange').href = `/download-range?start_ns=${Math.round(startNs)}&end_ns=${Math.round(endNs)}`;
+  $('downloadRange').textContent = `download selected NPZ chunks (${d.files_used})`;
+  $('downloadRange').hidden = false;
   render(d);
 }
 

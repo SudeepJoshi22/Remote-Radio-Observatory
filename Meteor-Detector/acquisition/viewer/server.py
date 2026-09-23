@@ -25,10 +25,12 @@ import glob
 import os
 import re
 import sys
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 
 import numpy as np
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=None)
@@ -118,6 +120,27 @@ def _public_chunk(row):
     }
 
 
+def _chunks_for_range(rows, start_ns, end_ns):
+    """Return indexed chunks containing at least one sample in a time range."""
+    selected = []
+    candidates = sorted((r for r in rows if r["start_ns"] < end_ns),
+                       key=lambda r: r["start_ns"])
+    for i, row in enumerate(candidates):
+        next_start = (candidates[i + 1]["start_ns"]
+                      if i + 1 < len(candidates) else None)
+        if next_start is not None and next_start <= start_ns:
+            continue
+        try:
+            with np.load(row["path"]) as chunk:
+                t = chunk["t_utc_ns"]
+                if len(t) and t[-1] >= start_ns and t[0] <= end_ns:
+                    selected.append(row)
+        except Exception:
+            # A bad/incomplete file is not downloadable or plot data.
+            continue
+    return selected
+
+
 def _load_range(rows, start_ns, end_ns):
     """Concatenate every field across chunks overlapping [start_ns, end_ns].
 
@@ -137,8 +160,8 @@ def _load_range(rows, start_ns, end_ns):
     meta = None
     touched = 0
 
-    candidates = [r for r in rows if r["start_ns"] < end_ns]
-    candidates.sort(key=lambda r: r["start_ns"])
+    candidates = sorted((r for r in rows if r["start_ns"] < end_ns),
+                        key=lambda r: r["start_ns"])
     # Chunks are ~10 min; also keep the one immediately before the window in
     # case it runs into it.
     for i, r in enumerate(candidates):
@@ -297,6 +320,45 @@ def download(filename):
     directory = os.path.dirname(event_paths[filename]) if filename in event_paths else DATA_DIR
     return send_from_directory(directory, filename, as_attachment=True,
                                conditional=True)
+
+
+@app.route("/download-range")
+def download_range():
+    """ZIP all completed NPZ chunks overlapping the selected plot window."""
+    try:
+        start_ns = int(request.args["start_ns"])
+        end_ns = int(request.args["end_ns"])
+    except (KeyError, ValueError):
+        return jsonify({"error": "start_ns and end_ns (int, UTC ns) required"}), 400
+    if end_ns <= start_ns:
+        return jsonify({"error": "end_ns must be greater than start_ns"}), 400
+
+    rows = _chunks_for_range(_index(), start_ns, end_ns)
+    if not rows:
+        return jsonify({"error": "no completed NPZ chunks in that range"}), 404
+
+    fd, archive_path = tempfile.mkstemp(prefix="rro-npz-", suffix=".zip")
+    try:
+        with os.fdopen(fd, "wb") as output:
+            with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_STORED,
+                                 allowZip64=True) as archive:
+                for row in rows:
+                    archive.write(row["path"], arcname=os.path.basename(row["path"]))
+    except Exception:
+        try:
+            os.unlink(archive_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+    start_text = datetime.fromtimestamp(start_ns / 1e9, tz=timezone.utc).strftime("%Y%m%d_%H%M")
+    end_text = datetime.fromtimestamp(end_ns / 1e9, tz=timezone.utc).strftime("%Y%m%d_%H%M")
+    response = send_file(archive_path, as_attachment=True,
+                         download_name=f"rro_npz_{start_text}_{end_text}.zip",
+                         mimetype="application/zip", conditional=True)
+    response.call_on_close(lambda: os.unlink(archive_path)
+                           if os.path.exists(archive_path) else None)
+    return response
 
 
 @app.route("/api/data")

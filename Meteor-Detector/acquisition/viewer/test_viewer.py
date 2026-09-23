@@ -13,6 +13,8 @@ import os
 import shutil
 import sys
 import tempfile
+import io
+import zipfile
 
 import numpy as np
 
@@ -102,6 +104,19 @@ def main():
         r = client.get("/download/" + complete_name)
         check("indexed NPZ downloads", r.status_code == 200, str(r.status_code))
         check("download has NPZ content", r.data.startswith(b"PK"))
+
+        r = client.get(f"/download-range?start_ns={s['start_ns']}&end_ns={s['end_ns']}")
+        check("selected NPZ range downloads as ZIP", r.status_code == 200,
+              str(r.status_code))
+        with zipfile.ZipFile(io.BytesIO(r.data)) as archive:
+            names = archive.namelist()
+        check("ZIP contains indexed NPZ chunks", names and all(name.endswith(".npz")
+              for name in names), str(len(names)))
+        r.close()
+
+        r = client.get("/download-range?start_ns=3&end_ns=2")
+        check("invalid download range is rejected", r.status_code == 400,
+              str(r.status_code))
 
         event_dir = os.path.join(outdir, "events")
         os.makedirs(event_dir)
