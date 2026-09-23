@@ -96,6 +96,14 @@ the real noise floor:
 python3 viewer/server.py --dir ~/fm_observations   # http://localhost:5002
 ```
 
+For local WSL analysis, use the full-resolution Matplotlib GUI. It lets you
+choose a UTC date/hour and focus window, then use native zoom and pan without
+the web viewer's response bucket limit:
+
+```bash
+python3 plot_npz_utc.py --dir ~/fm_observations --gui
+```
+
 No recordings yet? Try it on synthetic data first:
 `python3 viewer/demo_data.py --hours 24` then point the server at its output.
 On the Pi, install the production `viewer/rro-viewer.service` so Gunicorn keeps

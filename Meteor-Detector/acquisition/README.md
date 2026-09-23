@@ -11,10 +11,11 @@ months recording the inside of a USB dongle.
 | `dsp.py` | Shared DSP primitives. Imported by **both** the diagnostic tool and the recorder, so what you validate on the bench is what gets written to disk. |
 | `rf_check.py` | Phase 0. Four checks that prove the RF chain works. |
 | `fm_observe.py` | Phase 1. The always-on recorder. |
-| `plot_npz_utc.py` | Static plot of one recording (or a glob of several) vs UTC. One command, one matplotlib window. |
+| `plot_npz_utc.py` | Static plotter plus local full-resolution Matplotlib GUI for focusing by UTC date/hour and zooming/panning. |
 | `viewer/` | Interactive local web viewer: pan/zoom a full day, drag a threshold and see what it would have caught. See `viewer/README.md`. |
 | `test_pipeline.py` | End-to-end test against a synthetic sky. No hardware needed. |
 | `test_chunk_writer.py` | Checks that Tier-1 chunks publish atomically and leave no temporary file. |
+| `test_plot_npz_utc.py` | Headless check that local focused ranges load the original stored samples. |
 | `fm-observe.service` | systemd unit for unattended running on the Pi. |
 | `rro-viewer.service` | Gunicorn viewer service, LAN port 5002; can be published privately with Tailscale Serve. |
 | `archive_npz.sh` + `rro-npz-archive.*` | Hourly, non-destructive Google Drive copy and 30-day remote retention. |
@@ -109,6 +110,19 @@ For one file, or a quick glob:
 ```bash
 python3 plot_npz_utc.py --dir ~/fm_observations
 ```
+
+For local WSL analysis with a focusable GUI and the original stored samples
+(no web-viewer bucket limit):
+
+```bash
+python3 plot_npz_utc.py --dir ~/fm_observations --gui
+```
+
+Enter a UTC date, choose the UTC starting hour and a 1-hour/6-hour/24-hour/
+7-day window, then click **plot selection**. Matplotlib's toolbar provides
+zoom and pan; the GUI loads the full selected range at the recorder's native
+frame rate. A 7-day selection can contain tens of millions of samples and may
+take substantial RAM/time, so start with a 1-hour window around a candidate.
 
 For browsing a full day interactively and manually checking candidate pings
 before deciding on a `--threshold-db`:
