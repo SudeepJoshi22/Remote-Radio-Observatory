@@ -235,8 +235,9 @@ echo "started, pid $!"
 ```
 
 `--save-iq` is on: Tier-2 triggered IQ capture costs a handful of MB per
-event and is the only way to later inspect a candidate ping's actual
-rise/decay shape rather than trusting the trigger blindly.
+event. The service also saves a 5-second raw-IQ reference snapshot at startup
+and every hour, even when no event triggers. These `sample_*.iq` files make it
+possible to inspect quiet periods without recording raw IQ continuously.
 
 **Start time (UTC): __________   PID: __________**
 

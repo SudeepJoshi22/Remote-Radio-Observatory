@@ -120,6 +120,7 @@ def main():
         threshold_db=6.0, hysteresis_db=2.0, min_frames=2, refractory_s=1.0,
         station="TEST", output_dir=outdir, chunk_seconds=DURATION_S * 2,
         save_iq=True, pre_seconds=1.0, post_seconds=1.5,
+        iq_snapshot_interval=0.0, iq_snapshot_seconds=1.0,
         max_events_per_hour=60, min_free_mb=1,
         queue_depth=N_BLOCKS + 64, report_seconds=1e9,
     )

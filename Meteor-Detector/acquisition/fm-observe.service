@@ -26,7 +26,9 @@ ExecStart=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/venv/bin/
     --station SIRSI \
     --threshold-db 6 \
     --output-dir /home/sudeep/fm_observations \
-    --save-iq
+    --save-iq \
+    --iq-snapshot-interval 3600 \
+    --iq-snapshot-seconds 5
 
 # The dongle occasionally drops off the USB bus; just come back.
 Restart=always

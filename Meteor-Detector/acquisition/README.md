@@ -14,7 +14,7 @@ months recording the inside of a USB dongle.
 | `plot_npz_utc.py` | Static plotter plus local full-resolution Matplotlib GUI for focusing by UTC date/hour and zooming/panning. |
 | `viewer/` | Interactive local web viewer: pan/zoom a full day, drag a threshold and see what it would have caught. See `viewer/README.md`. |
 | `test_pipeline.py` | End-to-end test against a synthetic sky. No hardware needed. |
-| `test_chunk_writer.py` | Checks that Tier-1 chunks publish atomically and leave no temporary file. |
+| `test_chunk_writer.py` | Checks atomic Tier-1 chunks and no-event periodic IQ snapshots. |
 | `test_plot_npz_utc.py` | Headless check that local focused ranges load the original stored samples. |
 | `fm-observe.service` | systemd unit for unattended running on the Pi. |
 | `rro-viewer.service` | Gunicorn viewer service, LAN port 5002; can be published privately with Tailscale Serve. |
@@ -102,6 +102,20 @@ channel that is dead locally. The check reports the quietest 200 kHz windows.
 ```bash
 python3 fm_observe.py --freq <CHANNEL> --gain <knee> --station SIRSI --save-iq
 ```
+
+With `--save-iq`, the recorder keeps the triggered IQ captures and also writes
+a 5-second `sample_*.iq` snapshot at startup and then once per hour, even when
+there are no events. Matching JSON metadata is written beside each snapshot.
+Use `--iq-snapshot-interval 0` to disable periodic snapshots while retaining
+event captures, or change the interval and duration, for example:
+
+```bash
+python3 fm_observe.py ... --save-iq \
+    --iq-snapshot-interval 900 --iq-snapshot-seconds 5
+```
+
+At 1.024 MS/s, each 5-second snapshot is about 10 MB, so the default is about
+250 MB/day in `events/`.
 
 ### 7. Look at what was recorded
 
@@ -425,8 +439,9 @@ physically meaningful quantity is SNR against a tracked floor.
 
 **Two tiers of storage.** Continuous raw IQ at 1.024 MS/s is 2.0 MB/s, or
 177 GB/day — not an option. Tier 1 is a ~125 Hz power series (~100–270 MB/day,
-years on an SD card). Tier 2 is a RAM ring buffer of raw IQ, dumped only around
-a trigger, so events can be re-examined later.
+years on an SD card). Tier 2 is a RAM ring buffer of raw IQ, dumped around a
+trigger, plus short periodic `sample_*.iq` reference snapshots so quiet periods
+can be inspected later without recording raw IQ continuously.
 
 **Decimate by integrating, never by subsampling.** The FFT is the decimator:
 1.024 MS/s → 125 power values/s is 8192:1 and loses nothing that matters for
