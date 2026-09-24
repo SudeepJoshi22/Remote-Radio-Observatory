@@ -9,6 +9,7 @@ months recording the inside of a USB dongle.
 | File | Purpose |
 |---|---|
 | `dsp.py` | Shared DSP primitives. Imported by **both** the diagnostic tool and the recorder, so what you validate on the bench is what gets written to disk. |
+| `compare_iq.py` | Offline, bounded-memory IQ comparison of our, MeteorRadio-style and Echoes-style estimators. See [IQ_COMPARISON.md](IQ_COMPARISON.md) for commands, assumptions and outputs. |
 | `rf_check.py` | Phase 0. Four checks that prove the RF chain works. |
 | `fm_observe.py` | Phase 1. The always-on recorder. |
 | `plot_npz_utc.py` | Static plotter plus local full-resolution Matplotlib GUI for focusing by UTC date/hour and zooming/panning. |
