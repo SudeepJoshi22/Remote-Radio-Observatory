@@ -27,8 +27,8 @@ ExecStart=/home/sudeep/github/Remote-Radio-Observatory/Meteor-Detector/venv/bin/
     --threshold-db 6 \
     --output-dir /home/sudeep/fm_observations \
     --save-iq \
-    --iq-snapshot-interval 3600 \
-    --iq-snapshot-seconds 5
+    --continuous-iq-seconds 3600 \
+    --iq-chunk-seconds 300
 
 # The dongle occasionally drops off the USB bus; just come back.
 Restart=always

@@ -15,12 +15,12 @@ Two tiers of storage
     Tier 1  power/noise/SNR at ~125 Hz, written as compressed .npz chunks.
             About 100-270 MB/day. This runs for years on an SD card.
     Tier 2  a rolling ring buffer of raw IQ held in RAM. When Tier 1 triggers,
-            the seconds either side of the event are dumped to disk. This is
-            what lets you go back and prove an event was a meteor -- rise time,
-            decay shape, Doppler -- instead of trusting a threshold.
+            the seconds either side of the event are dumped to disk. An
+            optional, explicitly bounded continuous IQ window can also be
+            written in chunks for offline analysis.
 
-    Storing raw IQ continuously is not an option: 1.024 MS/s of uint8 IQ is
-    2.0 MB/s, or 177 GB/day.
+    Continuous raw IQ is intentionally opt-in and bounded: 1.024 MS/s of
+    uint8 IQ is 2.0 MB/s, about 7.4 GB per hour.
 
 Decimation
     The FFT is the decimator. 1.024 MS/s -> 125 power values/s is 8192:1, and
@@ -202,7 +202,7 @@ class IQRing:
 
     def __init__(self, outdir, pre_s, post_s, frame_rate, block_bytes,
                  max_events_per_hour=60, min_free_mb=2048,
-                 periodic_interval_s=3600.0, periodic_seconds=5.0, meta=None):
+                 meta=None):
         self.outdir = outdir
         self.pre = max(1, int(pre_s * frame_rate))
         self.post = max(1, int(post_s * frame_rate))
@@ -210,10 +210,6 @@ class IQRing:
         self.block_bytes = block_bytes
         self.max_per_hour = max_events_per_hour
         self.min_free_mb = min_free_mb
-        self.periodic_interval_ns = (int(periodic_interval_s * 1e9)
-                                     if periodic_interval_s > 0 else 0)
-        self.periodic_frames = max(1, int(periodic_seconds * frame_rate))
-        self.periodic_meta = dict(meta or {})
         os.makedirs(outdir, exist_ok=True)
         self.ring = deque(maxlen=self.pre)
         self.capturing = False
@@ -223,12 +219,6 @@ class IQRing:
         self._recent = deque()
         self.written = 0
         self.skipped = 0
-        self._periodic_blocks = None
-        self._periodic_remaining = 0
-        self._periodic_start_ns = None
-        self._next_periodic_ns = None
-        self.periodic_written = 0
-        self.periodic_skipped = 0
 
     def _budget_ok(self, now):
         while self._recent and now - self._recent[0] > 3600:
@@ -241,8 +231,7 @@ class IQRing:
         return True, ""
 
     def push(self, block, t_ns, snr, trig_rise, trig_fall):
-        """Feed every block. Handles event and periodic captures."""
-        self._push_periodic(block, t_ns)
+        """Feed every block and capture only trigger-centered event IQ."""
         if self.capturing:
             self._blocks.append(block)
             if not self._meta["ended"]:
@@ -277,34 +266,6 @@ class IQRing:
                 "pre_s": len(self.ring) / self.frame_rate,
                 "post_s": self.post / self.frame_rate,
             }
-
-    def _push_periodic(self, block, t_ns):
-        """Capture short diagnostic IQ snapshots even when no event triggers."""
-        if not self.periodic_interval_ns:
-            return
-
-        if self._periodic_blocks is not None:
-            self._periodic_blocks.append(block)
-            self._periodic_remaining -= 1
-            if self._periodic_remaining <= 0:
-                self._write_periodic()
-            return
-
-        if self._next_periodic_ns is not None and t_ns < self._next_periodic_ns:
-            return
-
-        free_mb = shutil.disk_usage(self.outdir).free / 1e6
-        self._next_periodic_ns = t_ns + self.periodic_interval_ns
-        if free_mb < self.min_free_mb:
-            self.periodic_skipped += 1
-            log(f"  periodic IQ snapshot skipped: low disk ({free_mb:.0f} MB free)")
-            return
-
-        self._periodic_blocks = [block]
-        self._periodic_remaining = self.periodic_frames - 1
-        self._periodic_start_ns = t_ns
-        if self._periodic_remaining <= 0:
-            self._write_periodic()
 
     def _write(self):
         stamp = datetime.fromtimestamp(self._meta["t_start_ns"] / 1e9,
@@ -352,36 +313,83 @@ class IQRing:
         self._blocks = None
         self._meta = None
 
-    def _write_periodic(self):
-        stamp = datetime.fromtimestamp(self._periodic_start_ns / 1e9,
-                                       tz=timezone.utc)
-        base = f"sample_{stamp.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
-        iq_path = os.path.join(self.outdir, base + ".iq")
-        iq_tmp = iq_path + ".tmp"
+    def abort(self):
+        if self.capturing and self._blocks:
+            self._write()
+
+
+class ContinuousIQWriter:
+    """Write a bounded continuous raw-IQ window as atomic disk chunks."""
+
+    def __init__(self, outdir, duration_s, chunk_seconds, frame_rate,
+                 block_bytes, sample_rate_hz, min_free_mb=2048, meta=None):
+        self.outdir = outdir
+        self.duration_s = max(0.0, float(duration_s))
+        self.duration_ns = int(self.duration_s * 1e9)
+        self.chunk_frames = max(1, int(chunk_seconds * frame_rate))
+        self.frame_rate = frame_rate
+        self.block_bytes = block_bytes
+        self.sample_rate_hz = sample_rate_hz
+        self.min_free_mb = min_free_mb
+        self.meta = dict(meta or {})
+        os.makedirs(outdir, exist_ok=True)
+        self.start_ns = None
+        self._chunk_start_ns = None
+        self._chunk_index = 0
+        self._chunk_frames = 0
+        self._chunk_bytes = 0
+        self._file = None
+        self._iq_tmp = None
+        self._iq_path = None
+        self.written = 0
+        self.skipped = False
+        self.finished = False
+
+    def _open_chunk(self, t_ns):
+        stamp = datetime.fromtimestamp(t_ns / 1e9, tz=timezone.utc)
+        base = (f"continuous_{stamp.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
+                f"_chunk{self._chunk_index:04d}")
+        self._iq_path = os.path.join(self.outdir, base + ".iq")
+        self._iq_tmp = self._iq_path + ".tmp"
+        self._file = open(self._iq_tmp, "wb")
+        self._chunk_start_ns = t_ns
+        self._chunk_frames = 0
+        self._chunk_bytes = 0
+
+    def _close_chunk(self, t_end_ns):
+        if self._file is None:
+            return
         try:
-            with open(iq_tmp, "wb") as f:
-                for block in self._periodic_blocks:
-                    f.write(block)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(iq_tmp, iq_path)
+            self._file.flush()
+            os.fsync(self._file.fileno())
+            self._file.close()
+            os.replace(self._iq_tmp, self._iq_path)
         except Exception:
             try:
-                os.unlink(iq_tmp)
+                self._file.close()
+            except Exception:
+                pass
+            try:
+                os.unlink(self._iq_tmp)
             except FileNotFoundError:
                 pass
             raise
 
-        meta = dict(self.periodic_meta)
+        stamp = datetime.fromtimestamp(self._chunk_start_ns / 1e9,
+                                       tz=timezone.utc)
+        base = os.path.splitext(self._iq_path)[0]
+        meta = dict(self.meta)
         meta.update({
-            "kind": "periodic_snapshot",
-            "t_start_ns": self._periodic_start_ns,
+            "kind": "continuous_iq",
+            "t_start_ns": self._chunk_start_ns,
             "t_start_utc": stamp.isoformat(),
-            "duration_s": len(self._periodic_blocks) / self.frame_rate,
-            "bytes": len(self._periodic_blocks) * self.block_bytes,
+            "t_end_ns": t_end_ns,
+            "duration_s": self._chunk_frames / self.frame_rate,
+            "frames": self._chunk_frames,
+            "bytes": self._chunk_bytes,
             "format": "uint8 interleaved I,Q (rtl_sdr native)",
         })
-        meta_path = os.path.join(self.outdir, base + ".json")
+        meta_path = base + ".json"
         meta_tmp = meta_path + ".tmp"
         try:
             with open(meta_tmp, "w") as f:
@@ -395,18 +403,57 @@ class IQRing:
             except FileNotFoundError:
                 pass
             raise
-        log(f"  periodic IQ snapshot saved: {base}.iq "
-            f"({meta['bytes']/1e6:.1f} MB, {meta['duration_s']:.1f} s)")
-        self.periodic_written += 1
-        self._periodic_blocks = None
-        self._periodic_remaining = 0
-        self._periodic_start_ns = None
+        self.written += 1
+        log(f"  continuous IQ chunk saved: {os.path.basename(self._iq_path)} "
+            f"({self._chunk_bytes/1e6:.1f} MB, "
+            f"{self._chunk_frames / self.frame_rate:.1f} s)")
+        self._file = None
+        self._iq_tmp = None
+        self._iq_path = None
+        self._chunk_index += 1
+        self._chunk_start_ns = None
+        self._chunk_frames = 0
+        self._chunk_bytes = 0
 
-    def abort(self):
-        if self.capturing and self._blocks:
-            self._write()
-        if self._periodic_blocks:
-            self._write_periodic()
+    def _start(self, t_ns):
+        free_mb = shutil.disk_usage(self.outdir).free / 1e6
+        expected_mb = self.duration_s * self.sample_rate_hz * 2 / 1e6
+        if free_mb < self.min_free_mb + expected_mb:
+            self.skipped = True
+            self.finished = True
+            log(f"  continuous IQ skipped: need about {expected_mb:.0f} MB, "
+                f"only {free_mb:.0f} MB free")
+            return False
+        self.start_ns = t_ns
+        self._open_chunk(t_ns)
+        log(f"  continuous IQ capture started for {self.duration_s:.0f}s "
+            f"(about {expected_mb:.0f} MB)")
+        return True
+
+    def push(self, block, t_ns):
+        if self.finished or not self.duration_ns:
+            return
+        if self.start_ns is None and not self._start(t_ns):
+            return
+        if t_ns - self.start_ns >= self.duration_ns:
+            self.close(t_ns)
+            return
+        if self._file is None:
+            self._open_chunk(t_ns)
+        self._file.write(block)
+        self._chunk_frames += 1
+        self._chunk_bytes += len(block)
+        if self._chunk_frames >= self.chunk_frames:
+            self._close_chunk(t_ns + int(1e9 / self.frame_rate))
+
+    def close(self, t_end_ns=None):
+        if self.finished:
+            return
+        if self._file is not None:
+            self._close_chunk(t_end_ns or self.start_ns)
+        self.finished = True
+        if self.start_ns is not None:
+            log(f"  continuous IQ capture finished: {self.written} chunk(s)")
 
 
 # --------------------------------------------------------------------------
@@ -479,10 +526,15 @@ def run(args):
     ring = (IQRing(os.path.join(args.output_dir, "events"),
                    args.pre_seconds, args.post_seconds, frame_rate,
                    block_bytes, args.max_events_per_hour, args.min_free_mb,
-                   periodic_interval_s=getattr(args, "iq_snapshot_interval", 3600.0),
-                   periodic_seconds=getattr(args, "iq_snapshot_seconds", 5.0),
                    meta=meta)
             if args.save_iq else None)
+    continuous = (ContinuousIQWriter(
+                      os.path.join(args.output_dir, "events"),
+                      getattr(args, "continuous_iq_seconds", 0.0),
+                      getattr(args, "iq_chunk_seconds", 300.0),
+                      frame_rate, block_bytes, fs, args.min_free_mb, meta)
+                  if args.save_iq and
+                  getattr(args, "continuous_iq_seconds", 0.0) > 0 else None)
 
     log("=" * 62)
     log(f"station     {args.station}")
@@ -500,10 +552,9 @@ def run(args):
         ram = ring.pre * block_bytes / 1e6
         log(f"tier 2      IQ ring {args.pre_seconds:.0f}s pre / "
             f"{args.post_seconds:.0f}s post  ({ram:.0f} MB RAM)")
-        if ring.periodic_interval_ns:
-            log(f"tier 2      periodic raw IQ every "
-                f"{ring.periodic_interval_ns / 1e9:.0f}s, "
-                f"{ring.periodic_frames / frame_rate:.1f}s each")
+        if continuous:
+            log(f"tier 2      continuous raw IQ {continuous.duration_s:.0f}s "
+                f"in {args.iq_chunk_seconds:.0f}s chunks")
     else:
         log("tier 2      disabled (--save-iq to enable)")
     log("=" * 62)
@@ -551,6 +602,8 @@ def run(args):
 
             if ring is not None:
                 ring.push(raw, t_ns, snr, rise, fall)
+            if continuous is not None:
+                continuous.push(raw, t_ns)
             if rise:
                 log(f"  TRIGGER #{trig.events}  SNR {snr:.1f} dB  "
                     f"power {power:.1f}  floor {noise:.1f}")
@@ -601,6 +654,10 @@ def run(args):
         th.join(timeout=10)
         if ring is not None:
             ring.abort()
+        if continuous is not None:
+            end_ns = (t0_ns + int(frame * nfft / fs * 1e9)
+                      if t0_ns is not None else None)
+            continuous.close(end_ns)
         res = writer.flush()
         if res:
             log(f"final chunk: {os.path.basename(res[0])} ({res[1]} frames)")
@@ -614,8 +671,9 @@ def run(args):
     log(f"triggers {trig.events}")
     if ring is not None:
         log(f"IQ events written {ring.written}, skipped {ring.skipped}")
-        log(f"periodic IQ snapshots written {ring.periodic_written}, "
-            f"skipped {ring.periodic_skipped}")
+    if continuous is not None:
+        log(f"continuous IQ chunks written {continuous.written}, "
+            f"skipped {int(continuous.skipped)}")
     if stats["drops"]:
         pct = 100.0 * stats["drops"] / max(1, stats["blocks"] + stats["drops"])
         log(f"WARNING: {pct:.2f}% of blocks were dropped. Timing after each")
@@ -657,13 +715,13 @@ def main():
     p.add_argument("-o", "--output-dir", default="./fm_observations")
     p.add_argument("--chunk-seconds", type=float, default=600.0)
     p.add_argument("--save-iq", action="store_true",
-                   help="enable Tier 2 triggered raw IQ plus periodic snapshots")
+                   help="enable Tier 2 triggered raw IQ and optional continuous IQ")
     p.add_argument("--pre-seconds", type=float, default=3.0)
     p.add_argument("--post-seconds", type=float, default=5.0)
-    p.add_argument("--iq-snapshot-interval", type=float, default=3600.0,
-                   help="seconds between periodic raw-IQ snapshots; 0 disables them")
-    p.add_argument("--iq-snapshot-seconds", type=float, default=5.0,
-                   help="duration of each periodic raw-IQ snapshot")
+    p.add_argument("--continuous-iq-seconds", type=float, default=0.0,
+                   help="bounded continuous raw-IQ duration; 0 disables it")
+    p.add_argument("--iq-chunk-seconds", type=float, default=300.0,
+                   help="duration of each continuous raw-IQ disk chunk")
     p.add_argument("--max-events-per-hour", type=int, default=60)
     p.add_argument("--min-free-mb", type=float, default=2048)
     p.add_argument("--queue-depth", type=int, default=256)

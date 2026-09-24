@@ -14,7 +14,7 @@ months recording the inside of a USB dongle.
 | `plot_npz_utc.py` | Static plotter plus local full-resolution Matplotlib GUI for focusing by UTC date/hour and zooming/panning. |
 | `viewer/` | Interactive local web viewer: pan/zoom a full day, drag a threshold and see what it would have caught. See `viewer/README.md`. |
 | `test_pipeline.py` | End-to-end test against a synthetic sky. No hardware needed. |
-| `test_chunk_writer.py` | Checks atomic Tier-1 chunks and no-event periodic IQ snapshots. |
+| `test_chunk_writer.py` | Checks atomic Tier-1 chunks and continuous IQ chunks. |
 | `test_plot_npz_utc.py` | Headless check that local focused ranges load the original stored samples. |
 | `fm-observe.service` | systemd unit for unattended running on the Pi. |
 | `rro-viewer.service` | Gunicorn viewer service, LAN port 5002; can be published privately with Tailscale Serve. |
@@ -103,19 +103,19 @@ channel that is dead locally. The check reports the quietest 200 kHz windows.
 python3 fm_observe.py --freq <CHANNEL> --gain <knee> --station SIRSI --save-iq
 ```
 
-With `--save-iq`, the recorder keeps the triggered IQ captures and also writes
-a 5-second `sample_*.iq` snapshot at startup and then once per hour, even when
-there are no events. Matching JSON metadata is written beside each snapshot.
-Use `--iq-snapshot-interval 0` to disable periodic snapshots while retaining
-event captures, or change the interval and duration, for example:
+With `--save-iq`, the recorder keeps the triggered IQ captures. To record a
+continuous raw-IQ window for offline analysis, add a bounded duration. The
+data is written as finalized `continuous_*.iq` chunks with matching JSON
+metadata, even when there are no events:
 
 ```bash
 python3 fm_observe.py ... --save-iq \
-    --iq-snapshot-interval 900 --iq-snapshot-seconds 5
+    --continuous-iq-seconds 1800 --iq-chunk-seconds 300
 ```
 
-At 1.024 MS/s, each 5-second snapshot is about 10 MB, so the default is about
-250 MB/day in `events/`.
+Use `--continuous-iq-seconds 3600` for one hour. At 1.024 MS/s, that is about
+7.4 GB of raw IQ; the default 5-minute chunks are about 614 MB each. After the
+requested IQ window ends, Tier 1 NPZ recording continues normally.
 
 ### 7. Look at what was recorded
 
@@ -437,11 +437,10 @@ result independent of both window and FFT length; a full-scale tone reads
 **dBFS, never dBm.** An RTL-SDR has no absolute power calibration. The only
 physically meaningful quantity is SNR against a tracked floor.
 
-**Two tiers of storage.** Continuous raw IQ at 1.024 MS/s is 2.0 MB/s, or
-177 GB/day — not an option. Tier 1 is a ~125 Hz power series (~100–270 MB/day,
+**Two tiers of storage.** Tier 1 is a ~125 Hz power series (~100–270 MB/day,
 years on an SD card). Tier 2 is a RAM ring buffer of raw IQ, dumped around a
-trigger, plus short periodic `sample_*.iq` reference snapshots so quiet periods
-can be inspected later without recording raw IQ continuously.
+trigger. For offline analysis, Tier 2 can also write an explicitly bounded
+continuous window; at 1.024 MS/s this is 2.0 MB/s, or about 7.4 GB/hour.
 
 **Decimate by integrating, never by subsampling.** The FFT is the decimator:
 1.024 MS/s → 125 power values/s is 8192:1 and loses nothing that matters for

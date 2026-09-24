@@ -234,10 +234,11 @@ disown
 echo "started, pid $!"
 ```
 
-`--save-iq` is on: Tier-2 triggered IQ capture costs a handful of MB per
-event. The service also saves a 5-second raw-IQ reference snapshot at startup
-and every hour, even when no event triggers. These `sample_*.iq` files make it
-possible to inspect quiet periods without recording raw IQ continuously.
+`--save-iq` is on for triggered IQ capture. The service configuration also
+requests a bounded 1-hour continuous raw-IQ window in 5-minute
+`continuous_*.iq` chunks. Change `--continuous-iq-seconds` to `1800` for 30
+minutes, or to `0` to disable continuous IQ while retaining event captures.
+At 1.024 MS/s, one hour requires about 7.4 GB of free storage.
 
 **Start time (UTC): __________   PID: __________**
 
